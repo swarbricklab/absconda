@@ -1,0 +1,2 @@
+FROM {{ runtime_base }} AS runtime
+COPY --from=builder /tmp/absconda-env/ {{ env_dir }}/

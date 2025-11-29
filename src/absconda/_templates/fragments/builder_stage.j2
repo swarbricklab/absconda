@@ -1,0 +1,12 @@
+FROM {{ builder_base }} AS builder
+
+COPY <<'ABSCONDA_ENV' /tmp/env.yaml
+{{ env_yaml }}
+ABSCONDA_ENV
+
+RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
+    micromamba create -y -n {{ env_name }} -f /tmp/env.yaml && \
+    micromamba run -n base conda-pack -p {{ env_dir }} -o /tmp/absconda-env.tar.gz && \
+    mkdir -p /tmp/absconda-env && \
+    tar -xzf /tmp/absconda-env.tar.gz -C /tmp/absconda-env && \
+    rm /tmp/absconda-env.tar.gz

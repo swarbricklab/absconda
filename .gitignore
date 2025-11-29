@@ -1,0 +1,32 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+.env/
+venv/
+
+# Test and coverage outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging metadata
+*.egg-info/
+dist/
+build/
+
+# IDE/editor state
+.vscode/
+.idea/
+.DS_Store
+
+# Generated Docker build context caches
+*.tar
+*.tar.gz
+*.log
+
+# Absconda generated artifacts
+/tmp/

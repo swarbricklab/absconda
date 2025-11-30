@@ -18,7 +18,7 @@ The goal of Absconda’s test suite is to prove that every generated artifact—
 ### 2.2 Snapshot/Golden Tests
 - Maintain fixture directories containing `env.yaml`, optional `renv.lock`, snapshot exports, and expected Dockerfiles.
 - On each run, `absconda generate` produces output that is compared byte-for-byte with stored “golden” files. Any drift (e.g., due to template edits) must be reviewed and approved.
-- Separate fixtures cover Ubuntu default, Rocky profile, Alpine experimental, GPU hints, and the renv extension (once implemented).
+- Separate fixtures cover Ubuntu default, Rocky profile, Alpine experimental, GPU hints, and the renv extension (already wired).
 
 ### 2.3 Integration Tests
 - **Dockerfile to Image:** Use temporary directories to run `absconda build --image test/absconda:fixture`, then `docker run` the resulting image to validate that `python - <<'EOF'` snippets report the expected `sys.prefix`.
@@ -26,9 +26,21 @@ The goal of Absconda’s test suite is to prove that every generated artifact—
 - **Policy Enforcement:** Provide sample policies that intentionally fail (disallowed channel, missing label) and assert that `absconda validate` exits non-zero with actionable text.
 - **Multi-arch Smoke:** Trigger `docker buildx build --platform linux/amd64,linux/arm64 --load` for a minimal env to ensure the orchestrator respects the profile toggle. These run in CI environments that support QEMU/buildx (nightly, not per-commit).
 
+#### Current smoke coverage
+- `tests/test_integration_smoke.py::test_generate_minimal_example_via_subprocess` shells out via `python -m absconda` to mimic user workflows and ensures the generated Dockerfile on disk matches expectations.
+- `tests/test_integration_smoke.py::test_build_command_creates_busybox_image` drives the `absconda build` command end-to-end against a purpose-built BusyBox template so Docker builds remain fast (<10s). The test requires a working Docker daemon and cleans up the temporary image afterward.
+
+Run the integration subset locally with:
+
+```bash
+pytest -m integration
+```
+
+The build-focused test automatically skips when Docker or `docker info` are unavailable, but you'll get full coverage once Docker Desktop/Engine is running.
+
 ### 2.4 End-to-End Scenarios
 - **Snakemake Workflow:** Include a tiny Snakemake pipeline referencing the built image via the `container:` field, run it under Singularity, and confirm the env stays active without manual activation steps.
-- **Renv Restoration (future milestone):** With `--renv-lock` enabled, run `R -q -e 'library(pkgname)'` inside the container to ensure renv’s library path comes preconfigured.
+- **Renv Restoration:** With `--renv-lock` enabled, run `R -q -e 'library(pkgname)'` inside the container to ensure renv’s library path comes preconfigured.
 - **Failure Playbooks:** Trigger solver failures on purpose (e.g., nonexistent package) and assert that `resolution_notes.md` contains solver traces, snapshot diffs, and next-step guidance.
 
 ## 3. Tooling & Infrastructure

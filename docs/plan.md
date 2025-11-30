@@ -25,7 +25,7 @@
    - Fragment registry (base, builder, runtime, activation, extra RUN hooks).
    - Multi-stage flow that packages the env via `conda-pack`, unpacks it in the runtime stage, and records dependency manifests (`lddtree` summaries) for transparency.
    - Entry-point script generator and tests across sh/bash.
-   - (Planned extension) Optional renv stage that restores `renv.lock` inside the builder env and injects `.Rprofile`/`R_LIBS` wiring in the runtime image.
+   - Optional renv stage that restores `renv.lock` inside the builder env and injects `.Rprofile`/`R_LIBS` wiring in the runtime image.
 3. **Policy Engine**
    - Config discovery order and profile merging semantics.
    - Rule evaluation (allowed channels, labels, fragments).
@@ -63,7 +63,7 @@
 - Expand `README.md` with quickstart, multi-stage explanation, Singularity workflow.
 - `docs/spec.md` (living) + `docs/policy.md` describing schema and hook API.
 - `docs/templates.md` for fragment catalog and customization tips.
-- `docs/renv.md` (future) explaining how to supply `renv.lock`, required flags, and troubleshooting.
+- `docs/renv.md` explaining how to supply `renv.lock`, required flags, and troubleshooting.
 - Troubleshooting guide covering solver issues, policy violations, build/push errors.
 
 ## 7. Success Criteria
@@ -73,4 +73,4 @@
 - Multi-arch builds (amd64 + arm64) can be produced via a profile toggle without altering the default Linux/amd64 output.
 - Policy engine can block disallowed channels and enforce labels, with clear messages.
 - Documentation enables a new user to go from env.yaml to pushed image + Singularity artifact in <30 minutes.
-- Prototype renv integration successfully restores an `renv.lock` fixture and exposes R packages without manual activation steps.
+- Renv integration restores an `renv.lock` fixture and exposes R packages without manual activation steps (unit + integration tests enforce this path).

@@ -38,6 +38,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 pythonpath = ["src"]
+markers = [
+    "integration: marks slower smoke tests that exercise external CLIs",
+]
 
 [tool.ruff]
 line-length = 100

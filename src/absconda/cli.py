@@ -9,6 +9,10 @@ subcommand, and type annotations automatically map to option parsing and help te
 
 from __future__ import annotations
 
+import datetime
+import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, cast
 
@@ -89,6 +93,22 @@ def _load_with_feedback(file: Path, snapshot: Optional[Path]) -> LoadReport:
         raise typer.Exit(code=1) from exc
 
 
+def _read_optional_text_file(path: Optional[Path], label: str) -> Optional[str]:
+    if path is None:
+        return None
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        console.print(f"[red]Error:[/red] Unable to read {label} '{path}': {exc}")
+        raise typer.Exit(code=1) from exc
+
+    stripped = content.strip()
+    if not stripped:
+        console.print(f"[bold yellow]warning[/bold yellow]: {label} '{path}' was empty.")
+    return stripped
+
+
 def _print_warnings(report: LoadReport) -> None:
     _print_warning_messages(report.warnings)
 
@@ -96,6 +116,79 @@ def _print_warnings(report: LoadReport) -> None:
 def _print_warning_messages(messages: Iterable[str]) -> None:
     for warning in messages:
         console.print(f"[bold yellow]warning[/bold yellow]: {warning}")
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "env"
+
+
+def _date_stamp() -> str:
+    return datetime.datetime.utcnow().strftime("%Y%m%d")
+
+
+def _image_reference(repository: str, env_name: str, tag: Optional[str]) -> str:
+    slug = _slugify(env_name)
+    final_tag = tag or f"{slug}-{_date_stamp()}"
+    return f"{repository}:{final_tag}"
+
+
+def _run_command(command: list[str], *, cwd: Optional[Path] = None) -> None:
+    try:
+        subprocess.run(command, check=True, cwd=str(cwd) if cwd else None)
+    except FileNotFoundError as exc:  # pragma: no cover - depends on host setup
+        console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
+        raise typer.Exit(code=1) from exc
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]Command failed:[/red] {' '.join(command)}")
+        raise typer.Exit(code=exc.returncode) from exc
+
+
+def _build_image(
+    report: LoadReport,
+    *,
+    repository: str,
+    tag: Optional[str],
+    template: Optional[Path],
+    builder_override: Optional[str],
+    runtime_override: Optional[str],
+    multi_stage_override: Optional[bool],
+    context: Path,
+    push: bool,
+    renv_lock: Optional[str],
+) -> str:
+    dockerfile = _render_dockerfile(
+        report,
+        template=template,
+        builder_override=builder_override,
+        runtime_override=runtime_override,
+        multi_stage_override=multi_stage_override,
+        renv_lock=renv_lock,
+    )
+
+    image_ref = _image_reference(repository, report.env.name, tag)
+    context_path = context.resolve()
+
+    with tempfile.TemporaryDirectory(prefix="absconda-build-") as temp_dir:
+        dockerfile_path = Path(temp_dir) / "Dockerfile"
+        dockerfile_path.write_text(dockerfile, encoding="utf-8")
+
+        _run_command(
+            [
+                "docker",
+                "build",
+                "-t",
+                image_ref,
+                "-f",
+                str(dockerfile_path),
+                str(context_path),
+            ]
+        )
+
+        if push:
+            _run_command(["docker", "push", image_ref])
+
+    return image_ref
 
 
 def _active_policy() -> PolicyResolution:
@@ -123,6 +216,7 @@ def _render_dockerfile(
     builder_override: Optional[str],
     runtime_override: Optional[str],
     multi_stage_override: Optional[bool],
+    renv_lock: Optional[str] = None,
 ) -> str:
     policy_resolution = _active_policy()
     profile = policy_resolution.profile
@@ -141,6 +235,7 @@ def _render_dockerfile(
         builder_base=builder_base,
         runtime_base=runtime_base,
         template_path=template,
+        renv_lock=renv_lock,
     )
 
     try:
@@ -189,18 +284,25 @@ def generate(
         "--multi-stage/--single-stage",
         help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
     ),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        help="Path to an renv.lock file to restore alongside the Conda environment.",
+    ),
 ) -> None:
     """Generate a Dockerfile from the provided environment file."""
 
     _print_policy_banner()
     report = _load_with_feedback(file, snapshot)
     _print_warnings(report)
+    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
     dockerfile = _render_dockerfile(
         report,
         template=template,
         builder_override=builder_base,
         runtime_override=runtime_base,
         multi_stage_override=multi_stage,
+        renv_lock=renv_lock_text,
     )
 
     if output is not None:
@@ -237,33 +339,176 @@ def validate(
 
 @app.command()
 def build(
-    image: str = typer.Option(
+    repository: str = typer.Option(
         ...,
-        "--image",
-        help="Target OCI image reference, e.g. ghcr.io/org/proj:tag",
+        "--repository",
+        help="Target OCI repository (e.g., ghcr.io/org/absconda).",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Optional image tag. Defaults to '<env-name>-YYYYMMDD'.",
+    ),
+    file: Path = typer.Option(
+        Path("env.yaml"),
+        "--file",
+        "-f",
+        help="Path to the Conda environment file.",
+    ),
+    snapshot: Optional[Path] = typer.Option(
+        None,
+        "--snapshot",
+        help="Optional snapshot generated via 'conda env export'.",
+    ),
+    template: Optional[Path] = typer.Option(
+        None,
+        "--template",
+        help="Path to a custom template file (defaults to Absconda's built-in template).",
+    ),
+    builder_base: Optional[str] = typer.Option(
+        None,
+        "--builder-base",
+        help="Override the builder stage base image.",
+    ),
+    runtime_base: Optional[str] = typer.Option(
+        None,
+        "--runtime-base",
+        help="Override the runtime stage base image.",
+    ),
+    multi_stage: Optional[bool] = typer.Option(
+        None,
+        "--multi-stage/--single-stage",
+        help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
+    ),
+    context: Path = typer.Option(
+        Path("."),
+        "--context",
+        help="Docker build context directory.",
     ),
     push: bool = typer.Option(False, "--push", help="Push the image after a successful build."),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        help="Path to an renv.lock file to restore alongside the Conda environment.",
+    ),
 ) -> None:
     """Render a Dockerfile and build the container image."""
 
     _print_policy_banner()
-    console.print(f"[yellow]build[/yellow] would build {image} (push={push}).")
+    report = _load_with_feedback(file, snapshot)
+    _print_warnings(report)
+    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
+
+    image_ref = _build_image(
+        report,
+        repository=repository,
+        tag=tag,
+        template=template,
+        builder_override=builder_base,
+        runtime_override=runtime_base,
+        multi_stage_override=multi_stage,
+        context=context,
+        push=push,
+        renv_lock=renv_lock_text,
+    )
+
+    console.print(f"[green]Image built:[/green] {image_ref}")
+    if push:
+        console.print(f"[green]Image pushed:[/green] {image_ref}")
 
 
 @app.command()
 def publish(
-    image: str = typer.Option(..., "--image", help="Target OCI image reference"),
+    repository: str = typer.Option(
+        ...,
+        "--repository",
+        help="Target OCI repository (e.g., ghcr.io/org/absconda).",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Optional image tag. Defaults to '<env-name>-YYYYMMDD'.",
+    ),
+    file: Path = typer.Option(
+        Path("env.yaml"),
+        "--file",
+        "-f",
+        help="Path to the Conda environment file.",
+    ),
+    snapshot: Optional[Path] = typer.Option(
+        None,
+        "--snapshot",
+        help="Optional snapshot generated via 'conda env export'.",
+    ),
+    template: Optional[Path] = typer.Option(
+        None,
+        "--template",
+        help="Path to a custom template file (defaults to Absconda's built-in template).",
+    ),
+    builder_base: Optional[str] = typer.Option(
+        None,
+        "--builder-base",
+        help="Override the builder stage base image.",
+    ),
+    runtime_base: Optional[str] = typer.Option(
+        None,
+        "--runtime-base",
+        help="Override the runtime stage base image.",
+    ),
+    multi_stage: Optional[bool] = typer.Option(
+        None,
+        "--multi-stage/--single-stage",
+        help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
+    ),
+    context: Path = typer.Option(
+        Path("."),
+        "--context",
+        help="Docker build context directory.",
+    ),
     singularity_out: Optional[Path] = typer.Option(
         None,
         "--singularity-out",
         help="Optional path for the resulting Singularity .sif artifact.",
     ),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        help="Path to an renv.lock file to restore alongside the Conda environment.",
+    ),
 ) -> None:
-    """Build (if needed) and push an image, optionally generating a Singularity file."""
+    """Build an image, push it, and optionally emit a Singularity artifact."""
 
     _print_policy_banner()
-    console.print(
-        f"[yellow]publish[/yellow] would push {image} and emit {singularity_out or 'no .sif'}.")
+    report = _load_with_feedback(file, snapshot)
+    _print_warnings(report)
+    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
+
+    image_ref = _build_image(
+        report,
+        repository=repository,
+        tag=tag,
+        template=template,
+        builder_override=builder_base,
+        runtime_override=runtime_base,
+        multi_stage_override=multi_stage,
+        context=context,
+        push=True,
+        renv_lock=renv_lock_text,
+    )
+
+    console.print(f"[green]Image pushed:[/green] {image_ref}")
+
+    if singularity_out is not None:
+        singularity_out.parent.mkdir(parents=True, exist_ok=True)
+        _run_command(
+            [
+                "singularity",
+                "pull",
+                str(singularity_out),
+                f"docker://{image_ref}",
+            ]
+        )
+        console.print(f"[green]Singularity image written to[/green] {singularity_out}")
 
 
 if __name__ == "__main__":  # pragma: no cover

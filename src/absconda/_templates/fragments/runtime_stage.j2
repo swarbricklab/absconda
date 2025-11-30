@@ -1,2 +1,12 @@
 FROM {{ runtime_base }} AS runtime
 COPY --from=builder /tmp/absconda-env/ {{ env_dir }}/
+{% if renv_enabled %}
+COPY --from=builder /tmp/absconda-renv/ {{ renv_target_path }}/
+ENV R_PROFILE_USER={{ renv_target_path }}/.Rprofile \
+	RENV_PROJECT={{ renv_target_path }} \
+	RENV_PATHS_ROOT={{ renv_target_path }} \
+	RENV_PATHS_LIBRARY_ROOT={{ renv_target_path }}/renv/library \
+	RENV_PATHS_LIBRARY={{ renv_target_path }}/renv/library \
+	R_LIBS_SITE={{ renv_target_path }}/renv/library
+{% endif %}
+RUN if [ -x "{{ env_dir }}/bin/conda-unpack" ]; then PATH="{{ env_dir }}/bin:${PATH}" {{ env_dir }}/bin/conda-unpack && rm -rf {{ env_dir }}/conda-meta/history; fi

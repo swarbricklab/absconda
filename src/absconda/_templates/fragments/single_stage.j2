@@ -4,9 +4,58 @@ COPY <<'ABSCONDA_ENV' /tmp/env.yaml
 {{ env_yaml }}
 ABSCONDA_ENV
 
+{% if renv_enabled %}
+COPY <<'ABSCONDA_RENV_LOCK' /tmp/renv.lock
+{{ renv_lock }}
+ABSCONDA_RENV_LOCK
+{% endif %}
+
 RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
     micromamba create -y -n {{ env_name }} -f /tmp/env.yaml && \
     micromamba run -n base conda-pack -p {{ env_dir }} -o /tmp/absconda-env.tar.gz && \
     mkdir -p {{ env_dir }} && \
     tar -xzf /tmp/absconda-env.tar.gz -C {{ env_dir }} && \
     rm /tmp/absconda-env.tar.gz
+
+RUN if [ -x "{{ env_dir }}/bin/conda-unpack" ]; then PATH="{{ env_dir }}/bin:${PATH}" {{ env_dir }}/bin/conda-unpack && rm -rf {{ env_dir }}/conda-meta/history; fi
+
+{% if renv_enabled %}
+RUN <<'ABSCONDA_RENV'
+set -euxo pipefail
+mkdir -p /tmp/renv-project
+cp /tmp/renv.lock /tmp/renv-project/renv.lock.source
+cat <<'EOF' >/tmp/renv-project/restore.R
+if (!"renv" %in% rownames(installed.packages())) install.packages("renv", repos="https://cloud.r-project.org")
+renv::init(bare = TRUE, force = TRUE)
+renv::settings$use.cache(FALSE)
+file.copy("renv.lock.source", "renv.lock", overwrite = TRUE)
+Sys.setenv(
+    RENV_PATHS_LIBRARY_ROOT = "/tmp/renv-project/renv/library",
+    RENV_PATHS_LIBRARY = "/tmp/renv-project/renv/library"
+)
+renv::restore(lockfile = "renv.lock", prompt = FALSE)
+EOF
+cd /tmp/renv-project
+micromamba run -n {{ env_name }} Rscript restore.R
+mkdir -p /tmp/absconda-renv
+cp -R /tmp/renv-project/renv /tmp/absconda-renv/renv
+cp /tmp/renv-project/renv.lock /tmp/absconda-renv/renv.lock
+cat <<'EOF' >/tmp/absconda-renv/.Rprofile
+source("{{ renv_target_path }}/renv/activate.R")
+EOF
+ABSCONDA_RENV
+
+RUN <<'ABSCONDA_RENV_FINAL'
+set -euxo pipefail
+mkdir -p {{ renv_target_path }}
+cp -R /tmp/absconda-renv/. {{ renv_target_path }}/
+rm -rf /tmp/absconda-renv
+ABSCONDA_RENV_FINAL
+
+ENV R_PROFILE_USER={{ renv_target_path }}/.Rprofile \
+    RENV_PROJECT={{ renv_target_path }} \
+    RENV_PATHS_ROOT={{ renv_target_path }} \
+    RENV_PATHS_LIBRARY_ROOT={{ renv_target_path }}/renv/library \
+    RENV_PATHS_LIBRARY={{ renv_target_path }}/renv/library \
+    R_LIBS_SITE={{ renv_target_path }}/renv/library
+{% endif %}

@@ -74,31 +74,32 @@ Usage: absconda [COMMAND] [OPTIONS]
 Commands:
    generate   (default) Generate Dockerfile from Conda env
    validate   Check env file without output
-   build      Render Dockerfile, run docker build, optionally tag image
-   publish    Build (if needed) and push image to registry; can emit Singularity .sif via `singularity pull`
+   build      Render Dockerfile, run docker build, optionally push
+   publish    Build, push, and optionally emit a Singularity .sif via `singularity pull`
 
-Options:
+Common options:
   -f, --file PATH           Conda environment file (default: env.yaml)
-      --output PATH         Write Dockerfile to path instead of STDOUT
-      --base-image NAME     Override base image (default inferred)
-      --template PATH       Custom template file
-   --policy PATH         Path to policy config (default: absconda-policy.yaml)
-   --profile NAME        Policy profile to apply (default: profile in config)
-   --multi-stage         Force multi-stage builder/runtime template
-   --builder-base NAME   Base image for builder stage (overrides profile)
-   --runtime-base NAME   Base image for runtime stage (overrides profile)
-   --image NAME          Target image reference for build/publish commands
-   --push                When used with build, push image after successful build
-   --singularity-out PATH  Produce Singularity .sif via `singularity pull` (publish)
-      --label KEY=VALUE     Repeatable Docker label entries
-      --build-arg KEY=VALUE Repeatable build args
-      --var KEY=VALUE       Template variable overrides
-      --dry-run             Validate without writing
-      --json-logs           Emit structured logs
+     --snapshot PATH       Optional exported snapshot for validation hints
+     --output PATH         Write Dockerfile to path instead of STDOUT (generate)
+     --template PATH       Custom template file
+     --policy PATH         Policy config (default: absconda-policy.yaml)
+     --profile NAME        Policy profile to apply (default defined in config)
+     --builder-base NAME   Base image for builder stage (overrides profile)
+     --runtime-base NAME   Base image for runtime stage (overrides profile)
+     --multi-stage/--single-stage   Force template selection (otherwise profile default)
+     --var KEY=VALUE       Template variable overrides
+     --json-logs           Emit structured logs
   -q, --quiet               Suppress non-essential output
   -v, --verbose             Increase log verbosity (repeatable)
-      --version             Show version and exit
+     --version             Show version and exit
   -h, --help                Show help message
+
+Build/publish specific options:
+     --repository TEXT     Target OCI repository (required)
+     --tag TEXT            Image tag override; defaults to `<env-name>-YYYYMMDD`
+     --context PATH        Docker build context directory (default: current directory)
+     --push                Push image after build (build command only; publish always pushes)
+     --singularity-out PATH  Emit `.sif` artifact via `singularity pull` (publish)
 ```
 
 ## 7. Architecture & Components
@@ -161,11 +162,6 @@ Options:
 - **Solver customization hooks.** Flags expose solver choice (`--solver mamba|conda`), parallelism, and remote channel allowances so CI can mimic local behavior.
 
 ## 13. Container Runtime & Singularity Compatibility
-- **Activation baked into the image.** Runtime stage exports `CONDA_PREFIX=/opt/conda/envs/<name>`, `CONDA_DEFAULT_ENV=<name>`, and prepends `/opt/conda/envs/<name>/bin` plus `/opt/conda/bin` to PATH. A lightweight `/usr/local/bin/absconda-entrypoint` script (copied from the builder stage) simply re-asserts these variables and `exec`s the requested command. Docker containers inherit the entrypoint, while Singularity conversions still observe the ENV defaults, so the environment is "on" even without shell hooks.
-- **Multi-stage layout.** Default profile uses two stages: (1) **builder** (`mambaorg/micromamba:1.5.5`) installs micromamba, solves the loose env, and captures optional snapshot metadata; (2) **runtime** (`debian:bookworm-slim`) copies `/opt/conda/envs/<name>`, `/opt/conda/condabin`, shared libraries discovered via `ldd`, the entrypoint script, and any required OS packages. Additional fragments (e.g., GPU, Alpine runtime) can expand this pattern.
-- **Singularity workflow.** `absconda publish --singularity-out env.sif --image ghcr.io/org/proj:tag` builds/pushes the Docker image, then shells out to `singularity pull docker://ghcr.io/org/proj:tag` to create a SIF artifact for NCI. Documentation includes a verification command (`singularity exec env.sif python -c "import sys; print(sys.prefix)"`) and guidance for Snakemake users referencing images via the `container:` field.
-- **No manual activation required.** Because activation is purely ENV-based (no `conda init`), images behave consistently under Docker, Apptainer/Singularity, and workflow managers like Snakemake or Nextflow.
-- **Conda-pack as the default mover.** Instead of bespoke copy logic, the builder stage runs `conda-pack` to create a relocatable tarball of the solved environment. The runtime stage unpacks it under `/opt/conda/envs/<name>` and applies the activation script. This keeps runtime images lean, guarantees shared objects travel with the env, and limits the number of code paths we must test. Optional validation still runs `lddtree` on representative binaries to document external dependencies inside `resolution_notes.md`.
 
 ## 14. Policy Configuration System
 - **Config file:** Absconda searches for `absconda-policy.yaml` (current directory → repo root → `~/.config/absconda/`). The file declares version, named profiles, channel policies, required template fragments, metadata rules, and optional security scanners. CLI `--policy` overrides the path.
@@ -180,9 +176,9 @@ Options:
 - **Delegated authentication.** Absconda does not manage registry credentials directly; it surfaces helpful messages if Docker/Podman lacks a login and points users to the relevant CLI commands, keeping the security model simple.
 
 ## 16. Planned Extensions
-- **Conda + pip + renv environments.** Users will be able to supply both `env.yaml` and `renv.lock`. Absconda's builder stage installs micromamba, restores the Conda env, then runs `Rscript -e 'renv::restore()'` inside the env to materialize R packages. The runtime stage copies both the packed Conda env (via `conda-pack`) and the `renv/library` tree, installs a minimal `.Rprofile` that auto-loads renv, and ensures `R_LIBS_SITE` points at the restored library so no manual activation is required. This feature will be guarded behind a policy fragment/CLI flag (`--renv-lock`) until stabilized.
+- **Enhanced renv ergonomics.** Build runners already honor `--renv-lock`; upcoming work explores automatically injecting `r-base` (when missing), caching shared renv libraries between builds, and surfacing clearer diagnostics when `Rscript` is absent from the Conda env.
 - **Multi-arch publishing.** Future profiles can enable Docker buildx multi-arch output (linux/amd64 + linux/arm64) so Apple Silicon users get native performance while the default remains Linux.
 
 ## 17. Open Questions
 - Should `absconda publish` also support OCI registries that require OIDC/device flow login, or do we delegate auth entirely to Docker/Podman (current plan favors delegation)?
-- What criteria signal readiness to promote the renv integration from experimental to default (test coverage, sample workloads, user opt-in rate)?
+- What heuristics should trigger additional renv safeguards (e.g., verifying `r-base` is pinned, warning when `renv.lock` targets a mismatched R release)?

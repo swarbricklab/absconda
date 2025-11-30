@@ -71,3 +71,28 @@ def test_render_dockerfile_custom_template(tmp_path: Path) -> None:
 
     assert "FROM override" in dockerfile
     assert "RUN echo 'tmpl-demo'" in dockerfile
+
+
+def test_render_dockerfile_with_renv_lock() -> None:
+    env = make_env()
+    profile = make_profile()
+    renv_lock = (
+        Path(__file__).parent / "fixtures" / "sample-renv.lock"
+    ).read_text(encoding="utf-8")
+
+    config = RenderConfig(
+        env=env,
+        profile=profile,
+        multi_stage=True,
+        builder_base=DEFAULT_BUILDER_IMAGE,
+        runtime_base="debian:bookworm-slim",
+        template_path=None,
+        renv_lock=renv_lock,
+    )
+
+    dockerfile = render_dockerfile(config)
+
+    assert "ABSCONDA_RENV_LOCK" in dockerfile
+    assert "renv::restore" in dockerfile
+    assert "COPY --from=builder /tmp/absconda-renv/ /opt/absconda/renv/" in dockerfile
+    assert "RENV_PATHS_LIBRARY=/opt/absconda/renv/renv/library" in dockerfile

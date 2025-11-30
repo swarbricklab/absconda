@@ -16,6 +16,7 @@ from .policy import PolicyProfile
 
 DEFAULT_BUILDER_IMAGE = "mambaorg/micromamba:1.5.5"
 DEFAULT_RUNTIME_IMAGE = "debian:bookworm-slim"
+DEFAULT_RENV_TARGET = "/opt/absconda/renv"
 
 _TEMPLATE_PACKAGE = "absconda._templates"
 _DEFAULT_TEMPLATE_NAME = "default/main.j2"
@@ -35,6 +36,8 @@ class RenderConfig:
     builder_base: str
     runtime_base: str
     template_path: Optional[Path] = None
+    renv_lock: Optional[str] = None
+    renv_target: str = DEFAULT_RENV_TARGET
 
 
 def render_dockerfile(config: RenderConfig) -> str:
@@ -132,6 +135,9 @@ def _build_context(
         "multi_stage": config.multi_stage,
         "export_block": export_block,
         "runtime_command": '["python"]',
+        "renv_lock": config.renv_lock,
+        "renv_enabled": config.renv_lock is not None,
+        "renv_target_path": config.renv_target,
     }
 
 

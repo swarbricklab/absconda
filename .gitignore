@@ -30,3 +30,6 @@ build/
 
 # Absconda generated artifacts
 /tmp/
+
+# Environment variables
+.env

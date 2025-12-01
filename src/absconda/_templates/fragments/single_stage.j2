@@ -1,5 +1,11 @@
 FROM {{ builder_base }}
 
+{% if labels %}
+{% for label in labels %}
+LABEL {{ label }}
+{% endfor %}
+{% endif %}
+
 COPY <<'ABSCONDA_ENV' /tmp/env.yaml
 {{ env_yaml }}
 ABSCONDA_ENV

@@ -1,0 +1,73 @@
+version: 1
+builders:
+  # GCP remote builder using Terraform
+  gcp-builder:
+    # VM instance name (from Terraform output)
+    host: absconda-builder
+    # OS Login username (run: gcloud compute os-login describe-profile | grep username)
+    # For first-time setup, use ${USER} and run: absconda remote init gcp-builder
+    user: j_reeves_garvan_org_au
+    workspace: /var/lib/absconda
+    ssh_key: ~/.ssh/google_compute_engine
+    ssh_port: 22
+    # SSH via Identity-Aware Proxy (IAP) - use full gcloud.py path
+    ssh_options:
+      - -o
+      - CheckHostIP=no
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - ProxyCommand=gcloud compute start-iap-tunnel %h %p --listen-on-stdin --zone=${GCP_ZONE} --project=${GCP_PROJECT} --verbosity=warning
+      - -o
+      - ProxyUseFdpass=no
+    # Provision the builder infrastructure
+    provision_command:
+      - bash
+      - -c
+      - |
+        cd terraform/gcp && \
+        terraform init -backend-config="bucket=${TF_VAR_state_bucket}" -backend-config="prefix=${TF_VAR_state_prefix}" && \
+        terraform apply -auto-approve
+    # Start/stop commands for cost savings
+    start_command:
+      - gcloud
+      - compute
+      - instances
+      - start
+      - absconda-builder
+      - --zone=${GCP_ZONE}
+      - --project=${GCP_PROJECT}
+    stop_command:
+      - gcloud
+      - compute
+      - instances
+      - stop
+      - absconda-builder
+      - --zone=${GCP_ZONE}
+      - --project=${GCP_PROJECT}
+    # Health check via gcloud
+    health_command:
+      - gcloud
+      - compute
+      - instances
+      - describe
+      - absconda-builder
+      - --zone=${GCP_ZONE}
+      - --project=${GCP_PROJECT}
+      - --format=value(status)
+    # Additional metadata
+    project: ${GCP_PROJECT}
+    zone: ${GCP_ZONE}
+
+  # Example: Generic remote builder (for reference)
+  generic-remote:
+    host: builder.example.com
+    user: absconda
+    workspace: /home/absconda/absconda-builds
+    ssh_key: ~/.ssh/absconda
+    ssh_port: 22
+    ssh_options:
+      - -o
+      - StrictHostKeyChecking=no
+    start_command: echo "Builder already running"
+    stop_command: echo "Manual shutdown required"

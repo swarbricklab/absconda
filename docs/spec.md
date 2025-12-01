@@ -3,12 +3,18 @@
 ## 1. Overview
 Absconda is a command-line utility that consumes a Conda environment definition (YAML) and emits a reproducible Dockerfile. It bridges data science reproducibility gaps by allowing teams to promote a vetted environment directly into container form without hand-authoring Dockerfiles.
 
-### Goals
+Many users run Absconda from restricted HPC systems (e.g., NCI) where Docker and root privileges are unavailable. To keep those teams unblocked, Absconda can ship Dockerfiles to a managed remote build server (for example, a cloud VM) while still doing validation and rendering locally.
+
+3. As a platform engineer, I can run Absconda in CI to fail fast when the environment file is invalid or references unavailable channels.
+4. As a platform or infrastructure engineer, I can point `absconda build/publish` at a managed remote build server (any cloud or on-prem host) so heavy Docker builds happen remotely while validation still runs locally.
+5. As any user, I can validate the Dockerfile before building via a `--dry-run` flag that performs schema and package resolution checks.
 - **Zero-friction handoff** from Conda environments to Docker images.
 - **Deterministic builds** that pin exact package versions and base images.
 - **Team-ready ergonomics**: sensible defaults, guardrails, and clear diagnostics.
+- **Remote-friendly builds**: when local Docker isn’t allowed, Absconda can offload the Docker build to a remote host without sacrificing the local feedback loop.
 
 ### Non-goals
+   - When remote builds are requested, always performs validation and Dockerfile rendering locally before contacting the build server to minimize wasted/cloud costs.
 - Acting as a generic Dockerfile templating engine for non-Conda projects.
 - Replacing full-featured CI/CD or registry tooling; the built-in `build`/`publish` commands are thin wrappers around Docker/Podman/Singularity and stay intentionally minimal.
 
@@ -16,17 +22,21 @@ Absconda is a command-line utility that consumes a Conda environment definition 
 - **Primary**: Linux/amd64 containers destined for Docker and Singularity (NCI focus). All templates, policy profiles, and tests default to this target.
 - **Secondary**: Linux/arm64 (Apple Silicon) images produced via multi-arch builds or dedicated profiles. Mac execution is treated as a best-effort extension that reuses the Linux templates wherever possible.
 
+   --remote-builder NAME  Optional remote builder target (e.g., `default-remote`); falls back to local Docker when omitted
+     --remote-off          Shut down the remote builder VM after the run completes (best-effort)
 ## 2. Personas & Use Cases
 | Persona | Needs | Representative Scenarios |
 | --- | --- | --- |
 | Data Scientist | Quickly containerize notebooks for sharing or deployment. | Generates a Dockerfile from `env.yaml`, tweaks only runtime entrypoints. |
-| MLOps Engineer | Enforces consistent base images and build policy. | Applies organization policies (base images, labels, extra packages) while reviewing generated Dockerfiles. |
+6. **Build Orchestrator**: when invoked via `absconda build/publish`, shells out to Docker/Podman, handles tagging, pushes, and optional Singularity pulls while streaming logs.
+7. **Remote Build Coordinator**: optional module that provisions, starts, labels, and tears down remote build servers (initially a single cloud VM with Docker + Buildx). It relies on Terraform or the provider’s CLI/SDK to ensure the VM exists, performs health checks, copies rendered Dockerfiles/context via `scp`/`rsync`, and proxies logs/events back to the CLI. In the low-concurrency default, the coordinator manages a simple lease/lock so only one build runs at a time; callers can wait or retry rather than scaling out automatically.
 | Platform Engineer | Integrates Absconda into CI pipelines. | Runs Absconda headlessly to regenerate Dockerfiles whenever `env.yaml` changes. |
 
-## 3. User Stories
+- **Remote build servers.** Users can opt into a `--remote-builder` profile (starting with `default-remote`) that provisions or resumes a VM on their chosen provider (cloud or on-prem) preloaded with Docker Engine and Buildx. Absconda always performs validation and Dockerfile rendering locally, then streams the build context to the VM via SSH/SCP, triggers the Docker build remotely, and forwards logs in real time. After the build/publish operation, the coordinator can optionally stop the VM (`--remote-off`) to avoid lingering costs.
+- **Infrastructure-as-code workflow.** Provisioning for the remote builder relies on Terraform modules (or equivalent IaC) checked into the repository. The CLI shell-outs to `terraform apply/destroy` or calls the provider’s CLI/SDK when a builder needs to be created on-demand. Remote builders store a small metadata file that indicates their active/inactive status so the CLI can skip re-provisioning and focus on start/stop operations.
 1. As a data scientist, I can run `absconda --file env.yaml > Dockerfile` to produce a Dockerfile that installs all Conda dependencies and activates the environment.
 2. As an MLOps engineer, I can specify metadata (labels, maintainer, default shell) via command-line flags or config files.
-3. As a platform engineer, I can run Absconda in CI to fail fast when the environment file is invalid or references unavailable channels.
+- **Autoscaling builders.** Build server orchestration expands beyond a single VM to a small pool of on-demand instances (managed instance groups, auto-scaling sets, Kubernetes jobs, etc.) so concurrent `absconda build` invocations can queue or burst safely.
 4. As any user, I can validate the Dockerfile before building via a `--dry-run` flag that performs schema and package resolution checks.
 
 ## 4. Functional Requirements
@@ -54,6 +64,7 @@ Absconda is a command-line utility that consumes a Conda environment definition 
    - Emits warnings for unpinned package versions, missing channels, or unsupported platforms.
    - Returns non-zero exit codes on validation or generation failures.
    - Evaluates policy rules: channel allowlists, required metadata, enforced fragments, and optional security scanners defined in `absconda-policy.yaml`. Violations are surfaced with actionable remediation steps.
+   - Emits a deterministic build-context tarball (rendered Dockerfile, env files, helper assets, manifest) whenever a remote build is requested so the remote host receives identical inputs to local `docker build`.
 
 5. **Quality of Life**
    - `--help` flag documents all options with examples.
@@ -99,7 +110,21 @@ Build/publish specific options:
      --tag TEXT            Image tag override; defaults to `<env-name>-YYYYMMDD`
      --context PATH        Docker build context directory (default: current directory)
      --push                Push image after build (build command only; publish always pushes)
+   --remote-builder NAME  Optional remote builder target (e.g., `default-remote`); falls back to local Docker when omitted
+   --remote-off          Shut down the remote builder VM after the run completes (best-effort)
+   --remote-wait SECONDS  Max seconds to wait for a busy remote builder before failing (default: generously high due to low expected concurrency)
      --singularity-out PATH  Emit `.sif` artifact via `singularity pull` (publish)
+
+Remote builder management commands:
+
+```
+absconda remote list [-c PATH]
+absconda remote provision <builder> [--config PATH]
+absconda remote start|stop <builder> [--config PATH]
+absconda remote status <builder> [--config PATH]
+```
+
+All remote subcommands share the same config discovery order as `--remote-builder` and simply execute the commands defined in `absconda-remote.yaml`, making it easy to wrap Terraform or cloud CLIs without duplicating logic.
 ```
 
 ## 7. Architecture & Components
@@ -174,10 +199,15 @@ Build/publish specific options:
 - **Optional orchestration.** `absconda build` and `absconda publish` wrap Docker/Podman and Singularity CLIs. `build` renders templates to a temp scratch dir, runs `docker buildx build`, applies tags, and optionally pushes when `--push` is set. `publish` ensures the image exists (building if necessary), pushes to the configured registry, and optionally runs `singularity pull` to produce a `.sif` artifact.
 - **Pluggable tooling.** The build orchestrator respects environment variables (`DOCKER_HOST`, `APPTAINER_CACHEDIR`) and surfaces exact commands in logs for reproducibility. Future adapters (e.g., `--builder podman`, `--singularity apptainer`) can reuse the same abstraction layer.
 - **Delegated authentication.** Absconda does not manage registry credentials directly; it surfaces helpful messages if Docker/Podman lacks a login and points users to the relevant CLI commands, keeping the security model simple.
+- **Remote build servers.** Users can opt into a `--remote-builder` profile (starting with `default-remote`) that provisions or resumes a VM on the configured provider (AWS, Azure, other cloud/on-prem targets) preloaded with Docker Engine and Buildx. Absconda always performs validation and Dockerfile rendering locally, then tars the scratch build context (Dockerfile, env files, helper assets) and streams it to the VM via SSH/SCP. A small manifest accompanies the tarball so the remote agent can double-check metadata (profile, tag, policy hash) before running `docker build`. After the build/publish operation, the coordinator can optionally stop the VM (`--remote-off`) or keep it warm for a short window; callers can also request a maximum wait time (`--remote-wait`) before falling back or exiting.
+- **Remote builder management CLI.** The `absconda remote` command group exposes `list`, `provision`, `start`, `stop`, and `status` subcommands so operators can handle builder lifecycles without launching a build. Each command loads the same `absconda-remote.yaml` file consumed by `--remote-builder`, meaning provider metadata (project, zone, Terraform directory, health probes) lives alongside infrastructure code. Provision/start/stop simply shell out to the configured commands, which keeps credentials out of the repo by letting teams reference environment variables such as `${GCP_PROJECT?}` or `${SERVICE_ACCOUNT_JSON}` inside the YAML.
+- **Infrastructure-as-code workflow.** Provisioning for the remote builder relies on Terraform modules (or another IaC tool) checked into the repository. The CLI shell-outs to `terraform apply/destroy` or calls the provider’s CLI/SDK when a builder needs to be created on-demand. Remote builders store a small metadata file (e.g., in object storage) that indicates their active/inactive status so the CLI can skip re-provisioning and focus on start/stop operations. During the initial rollout a single VM handles requests, and the CLI simply waits/retries (with progress messages) if the builder is busy rather than auto-scaling.
 
 ## 16. Planned Extensions
 - **Enhanced renv ergonomics.** Build runners already honor `--renv-lock`; upcoming work explores automatically injecting `r-base` (when missing), caching shared renv libraries between builds, and surfacing clearer diagnostics when `Rscript` is absent from the Conda env.
 - **Multi-arch publishing.** Future profiles can enable Docker buildx multi-arch output (linux/amd64 + linux/arm64) so Apple Silicon users get native performance while the default remains Linux.
+- **Remote caching & diffed uploads.** Investigate BuildKit cache exports, cloud/object-storage layer snapshots, and rsync-style delta uploads so remote builders avoid retransmitting multi-gigabyte contexts.
+- **Autoscaling builders.** When concurrency increases, graduate from a single VM to a managed instance group or queue-backed worker pool so multiple builds can run in parallel without manual coordination.
 
 ## 17. Open Questions
 - Should `absconda publish` also support OCI registries that require OIDC/device flow login, or do we delegate auth entirely to Docker/Podman (current plan favors delegation)?

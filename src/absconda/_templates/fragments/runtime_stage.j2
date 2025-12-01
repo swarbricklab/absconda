@@ -1,4 +1,9 @@
 FROM {{ runtime_base }} AS runtime
+{% if labels %}
+{% for label in labels %}
+LABEL {{ label }}
+{% endfor %}
+{% endif %}
 COPY --from=builder /tmp/absconda-env/ {{ env_dir }}/
 {% if renv_enabled %}
 COPY --from=builder /tmp/absconda-renv/ {{ renv_target_path }}/

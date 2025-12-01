@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path, PurePosixPath
@@ -138,8 +139,17 @@ def _build_context(
         "renv_lock": config.renv_lock,
         "renv_enabled": config.renv_lock is not None,
         "renv_target_path": config.renv_target,
+        "labels": _label_pairs(config.profile.required_labels),
     }
 
 
 def _channel_flags(channels: list[str]) -> str:
     return " ".join(f"--channel {channel}" for channel in channels)
+
+
+def _label_pairs(labels: dict[str, str]) -> list[str]:
+    pairs: list[str] = []
+    for key, value in labels.items():
+        encoded = json.dumps(value)
+        pairs.append(f"{key}={encoded}")
+    return pairs

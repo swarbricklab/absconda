@@ -5,6 +5,7 @@
 - Provide an optional orchestration path (`absconda build/publish`) that stays lightweight but convenient for CI and Singularity packaging.
 - Ship a transparent, extensible policy configuration system so teams can encode image, security, and metadata requirements without forking the tool.
 - Optimize for Linux/amd64 containers (Docker + Singularity) while keeping Linux/arm64 (Apple Silicon) as a supported secondary target via buildx profiles.
+- Support remote build execution so users without Docker privileges (e.g., on NCI) can push workloads to a managed remote builder while still getting fast local validation.
 
 ## 2. Workstreams & Milestones
 | Phase | Scope | Key Deliverables |
@@ -15,6 +16,7 @@
 | **Phase 3 – Policy Configuration System (Weeks 4-5)** | YAML schema, profile resolution, hook loading, enforcement messages. | `absconda-policy.yaml` parser, sample policies, hook API docs, validation integration tests. |
 | **Phase 4 – Build & Publish Commands (Weeks 5-6)** | Orchestrate Docker/Podman builds, registry pushes, optional Singularity pulls. | `absconda build`, `absconda publish`, streaming logs, error handling, e2e tests using local registry/mocked Singularity. |
 | **Phase 5 – Docs & Hardening (Weeks 6-7)** | README refresh, spec alignment, troubleshooting and policy guides, release prep. | Updated docs, CI badges, release notes, v0.1 tag. |
+| **Phase 6 – Remote Build Server (Weeks 7-8)** | Provision a cloud/on-prem builder VM via Terraform, ship CLI remote mode, document operational runbooks. | Terraform module + state docs, `--remote-builder/--remote-off/--remote-wait` flags, tarball upload agent, low-concurrency locking + wait/retry messaging. |
 
 ## 3. Detailed Tasks
 1. **Environment Loader**
@@ -38,7 +40,14 @@
    - Temp workspace creation, docker buildx invocation, auth passthrough.
    - Tagging/pushing workflow with retries and progress output.
    - Singularity pull integration (detect `singularity`/`apptainer`, optional skip flag).
-6. **Testing & QA**
+6. **Remote Build Server**
+   - Terraform module (network, firewall, startup script installing Docker + buildx) plus backend state guidance so multiple teammates can share the same builder.
+   - CLI flags `--remote-builder`, `--remote-off`, and `--remote-wait` that wrap provisioning/start/stop, expose wait/retry UX, and fall back to local when disabled.
+   - `absconda remote` management commands (list/provision/start/stop/status) that reuse `absconda-remote.yaml`, keep secrets in environment variables, and surface builder health before running expensive builds.
+   - Context tarball generator (Dockerfile, env artifacts, manifest) and secure transfer via `gcloud compute scp` or SSH with hashed filenames.
+   - Remote agent script that untars, runs `docker build`, streams logs back, and writes status markers for the CLI to poll.
+   - Simple lease/lock stored in GCS or Firestore so only one build runs at a time; includes watchdog cleanup for abandoned locks and friendly CLI progress output.
+7. **Testing & QA**
    - Unit tests for loaders, policy engine, template fragments.
    - Golden Dockerfile fixtures for major profiles (Ubuntu, Rocky, Alpine, GPU).
    - Integration tests running `absconda build` with sample envs.
@@ -58,6 +67,7 @@
 | Policy hooks misbehave | Build failures or security bypass | Run hooks in try/except, surface detailed errors, allow `--no-policy` escape hatch for emergency. |
 | Singularity CLI unavailable in CI | Blocks `.sif` generation | Detect binary presence, make `--singularity-out` optional, document installation steps. |
 | Auth complexity for publish | User frustration | Delegate login to Docker/Podman, provide clear error guidance, support env-based creds. |
+| Remote builder drift or idle cost | Stale Terraform state, unexpected cloud spend | Store Terraform state remotely, add automated stop-after-build logic, and expose `absconda remote status` so teams can verify builder state before running jobs. |
 
 ## 6. Documentation Plan
 - Expand `README.md` with quickstart, multi-stage explanation, Singularity workflow.

@@ -82,15 +82,16 @@ DOCKEREOF
     
     systemctl restart docker
     
-    # Fetch GitHub token from Secret Manager and configure Docker credential helper
+    # Fetch GitHub credentials from Secret Manager
     echo "Configuring GitHub Container Registry authentication..."
     GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=absconda-github-token --project=${var.project})
+    GITHUB_USERNAME=$(gcloud secrets versions access latest --secret=absconda-github-username --project=${var.project})
     
     # Create Docker config directory for root
     mkdir -p /root/.docker
     
     # Login to GHCR (credentials stored in /root/.docker/config.json)
-    echo "$${GITHUB_TOKEN}" | docker login ghcr.io -u github-token --password-stdin
+    echo "$${GITHUB_TOKEN}" | docker login ghcr.io -u "$${GITHUB_USERNAME}" --password-stdin
     
     # Create working directory (ownership will be set by provisioner after OS Login)
     mkdir -p /var/lib/absconda

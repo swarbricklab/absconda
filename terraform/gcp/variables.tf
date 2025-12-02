@@ -54,3 +54,8 @@ variable "github_token" {
   type        = string
   sensitive   = true
 }
+
+variable "github_username" {
+  description = "GitHub username for GHCR authentication"
+  type        = string
+}

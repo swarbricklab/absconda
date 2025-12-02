@@ -22,7 +22,7 @@ import typer
 from rich.console import Console
 
 from . import __version__, remote
-from .environment import EnvironmentLoadError, LoadReport, load_environment
+from .environment import EnvironmentLoadError, LoadReport, load_environment, load_tarball
 from .policy import PolicyLoadError, PolicyResolution, load_policy
 from .templates import (
     DEFAULT_BUILDER_IMAGE,
@@ -94,11 +94,30 @@ def main(
     _print_warning_messages(policy_resolution.warnings)
 
 
-def _load_with_feedback(file: Path, snapshot: Optional[Path]) -> LoadReport:
-    """Helper that loads env files and renders Typer-friendly errors."""
+def _load_with_feedback(
+    file: Optional[Path], 
+    tarball: Optional[Path],
+    snapshot: Optional[Path]
+) -> LoadReport:
+    """Helper that loads env files or tarballs and renders Typer-friendly errors."""
+    
+    if tarball is not None and file is not None:
+        # Both provided: use tarball for environment, file for metadata
+        console.print(
+            "[bold yellow]info[/bold yellow]: Both --file and --tarball provided. "
+            "Using tarball for environment content and YAML for metadata."
+        )
+    
+    if tarball is None and file is None:
+        console.print("[red]Error:[/red] Either --file or --tarball must be provided.")
+        raise typer.Exit(code=1)
 
     try:
-        return load_environment(file, snapshot)
+        if tarball is not None:
+            return load_tarball(tarball, file, snapshot)
+        else:
+            # file is guaranteed to not be None here
+            return load_environment(file, snapshot)  # type: ignore[arg-type]
     except EnvironmentLoadError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -132,6 +151,11 @@ def _print_warning_messages(messages: Iterable[str]) -> None:
 def _enforce_policy_constraints(report: LoadReport) -> None:
     profile = _active_policy().profile
     allowed = profile.allowed_channels
+    
+    # Skip channel validation for tarball-only mode (no env YAML)
+    if report.env is None:
+        return
+    
     if allowed:
         disallowed = [channel for channel in report.env.channels if channel not in allowed]
         if disallowed:
@@ -248,12 +272,18 @@ def _build_image_local(
         renv_lock=renv_lock,
     )
 
-    image_ref = _image_reference(repository, report.env.name, tag)
+    image_ref = _image_reference(repository, report.env_name, tag)
     context_path = context.resolve()
 
     with tempfile.TemporaryDirectory(prefix="absconda-build-") as temp_dir:
         dockerfile_path = Path(temp_dir) / "Dockerfile"
         dockerfile_path.write_text(dockerfile, encoding="utf-8")
+        
+        # If using tarball, copy it into the build context
+        if report.tarball:
+            import shutil
+            tarball_dest = Path(temp_dir) / "conda-env.tar.gz"
+            shutil.copy2(report.tarball.path, tarball_dest)
 
         _run_command(
             [
@@ -296,17 +326,18 @@ def _build_image_remote(
         renv_lock=renv_lock,
     )
 
-    image_ref = _image_reference(repository, report.env.name, tag)
+    image_ref = _image_reference(repository, report.env_name, tag)
     policy_resolution = _active_policy()
     manifest = {
         "absconda_version": __version__,
-        "env_name": report.env.name,
+        "env_name": report.env_name,
         "image": image_ref,
         "generated_at": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "policy_profile": policy_resolution.profile.name,
-        "channels": report.env.channels,
+        "channels": report.env.channels if report.env else [],
         "remote_builder": remote_options.builder,
         "push": push,
+        "tarball_mode": report.tarball is not None,
     }
 
     try:
@@ -373,6 +404,8 @@ def _render_dockerfile(
 
     config = RenderConfig(
         env=report.env,
+        tarball_filename="conda-env.tar.gz" if report.tarball else None,
+        env_name=report.env_name,
         profile=profile,
         multi_stage=multi_stage,
         builder_base=builder_base,
@@ -390,11 +423,17 @@ def _render_dockerfile(
 
 @app.command()
 def generate(
-    file: Path = typer.Option(
-        Path("env.yaml"),
+    file: Optional[Path] = typer.Option(
+        None,
         "--file",
         "-f",
-        help="Path to the Conda environment file.",
+        help="Path to the Conda environment file (required unless --tarball is specified).",
+    ),
+    tarball: Optional[Path] = typer.Option(
+        None,
+        "--tarball",
+        "-t",
+        help="Path to a pre-packed conda tarball (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -433,10 +472,15 @@ def generate(
         help="Path to an renv.lock file to restore alongside the Conda environment.",
     ),
 ) -> None:
-    """Generate a Dockerfile from the provided environment file."""
+    """Generate a Dockerfile from the provided environment file or tarball."""
 
     _print_policy_banner()
-    report = _load_with_feedback(file, snapshot)
+    
+    # Provide default for file if neither file nor tarball is specified
+    if file is None and tarball is None:
+        file = Path("env.yaml")
+    
+    report = _load_with_feedback(file, tarball, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
@@ -458,11 +502,17 @@ def generate(
 
 @app.command()
 def validate(
-    file: Path = typer.Option(
-        Path("env.yaml"),
+    file: Optional[Path] = typer.Option(
+        None,
         "--file",
         "-f",
-        help="Environment file to validate.",
+        help="Environment file to validate (required unless --tarball is specified).",
+    ),
+    tarball: Optional[Path] = typer.Option(
+        None,
+        "--tarball",
+        "-t",
+        help="Path to a pre-packed conda tarball (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -473,12 +523,23 @@ def validate(
     """Validate the environment and snapshot files without generating output."""
 
     _print_policy_banner()
-    report = _load_with_feedback(file, snapshot)
+    
+    # Provide default for file if neither file nor tarball is specified
+    if file is None and tarball is None:
+        file = Path("env.yaml")
+    
+    report = _load_with_feedback(file, tarball, snapshot)
     _enforce_policy_constraints(report)
-    console.print(
-        f"Environment [green]{report.env.name}[/green] is valid with "
-        f"{len(report.env.dependencies)} dependency entries."
-    )
+    
+    if report.tarball:
+        console.print(
+            f"Tarball [green]{report.env_name}[/green] is valid."
+        )
+    else:
+        console.print(
+            f"Environment [green]{report.env_name}[/green] is valid with "
+            f"{len(report.env.dependencies) if report.env else 0} dependency entries."  # type: ignore[union-attr]
+        )
     _print_warnings(report)
 
 
@@ -494,11 +555,17 @@ def build(
         "--tag",
         help="Optional image tag. Defaults to 'YYYYMMDD'.",
     ),
-    file: Path = typer.Option(
-        Path("env.yaml"),
+    file: Optional[Path] = typer.Option(
+        None,
         "--file",
         "-f",
-        help="Path to the Conda environment file.",
+        help="Path to the Conda environment file (required unless --tarball is specified).",
+    ),
+    tarball: Optional[Path] = typer.Option(
+        None,
+        "--tarball",
+        "-t",
+        help="Path to a pre-packed conda tarball (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -560,13 +627,18 @@ def build(
     """Render a Dockerfile and build the container image."""
 
     _print_policy_banner()
-    report = _load_with_feedback(file, snapshot)
+    
+    # Provide default for file if neither file nor tarball is specified
+    if file is None and tarball is None:
+        file = Path("env.yaml")
+    
+    report = _load_with_feedback(file, tarball, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
     
     # Resolve repository with defaults from config
-    resolved_repository = _resolve_repository(repository, report.env.name)
+    resolved_repository = _resolve_repository(repository, report.env_name)
     
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
@@ -615,11 +687,17 @@ def publish(
         "--tag",
         help="Optional image tag. Defaults to 'YYYYMMDD'.",
     ),
-    file: Path = typer.Option(
-        Path("env.yaml"),
+    file: Optional[Path] = typer.Option(
+        None,
         "--file",
         "-f",
-        help="Path to the Conda environment file.",
+        help="Path to the Conda environment file (required unless --tarball is specified).",
+    ),
+    tarball: Optional[Path] = typer.Option(
+        None,
+        "--tarball",
+        "-t",
+        help="Path to a pre-packed conda tarball (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -685,13 +763,18 @@ def publish(
     """Build an image, push it, and optionally emit a Singularity artifact."""
 
     _print_policy_banner()
-    report = _load_with_feedback(file, snapshot)
+    
+    # Provide default for file if neither file nor tarball is specified
+    if file is None and tarball is None:
+        file = Path("env.yaml")
+    
+    report = _load_with_feedback(file, tarball, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
     
     # Resolve repository with defaults from config
-    resolved_repository = _resolve_repository(repository, report.env.name)
+    resolved_repository = _resolve_repository(repository, report.env_name)
     
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 

@@ -31,11 +31,13 @@ class TemplateRenderError(Exception):
 class RenderConfig:
     """Configuration inputs required to render a Dockerfile."""
 
-    env: EnvSpec
     profile: PolicyProfile
     multi_stage: bool
     builder_base: str
     runtime_base: str
+    env: Optional[EnvSpec] = None
+    tarball_filename: Optional[str] = None
+    env_name: Optional[str] = None
     template_path: Optional[Path] = None
     renv_lock: Optional[str] = None
     renv_target: str = DEFAULT_RENV_TARGET
@@ -44,17 +46,33 @@ class RenderConfig:
 def render_dockerfile(config: RenderConfig) -> str:
     """Render a Dockerfile for the provided environment and policy profile."""
 
+    # Determine environment name
+    if config.env_name:
+        env_name = config.env_name
+    elif config.env:
+        env_name = config.env.name
+    else:
+        env_name = "absconda"
+    
     env_prefix = config.profile.env_prefix or "/opt/conda/envs"
-    env_dir = _join_path(env_prefix, config.env.name)
-    export_block = _build_export_block(env_dir, config.env.name)
+    env_dir = _join_path(env_prefix, env_name)
+    export_block = _build_export_block(env_dir, env_name)
 
-    env_yaml = _env_yaml(config.env)
+    # Handle tarball mode differently
+    if config.tarball_filename:
+        env_yaml = ""  # No env.yaml in tarball mode
+    elif config.env:
+        env_yaml = _env_yaml(config.env)
+    else:
+        env_yaml = ""
+    
     context = _build_context(
         config,
         env_prefix=env_prefix,
         env_dir=env_dir,
         export_block=export_block,
         env_yaml=env_yaml,
+        env_name=env_name,
     )
 
     try:
@@ -123,12 +141,13 @@ def _build_context(
     env_dir: str,
     export_block: list[str],
     env_yaml: str,
+    env_name: str,
 ) -> Dict[str, Any]:
     return {
         "env": config.env,
-        "env_name": config.env.name,
+        "env_name": env_name,
         "env_yaml": env_yaml,
-        "channel_flags": _channel_flags(config.env.channels),
+        "channel_flags": _channel_flags(config.env.channels) if config.env else "",
         "env_prefix": env_prefix,
         "env_dir": env_dir,
         "builder_base": config.builder_base,
@@ -140,6 +159,8 @@ def _build_context(
         "renv_enabled": config.renv_lock is not None,
         "renv_target_path": config.renv_target,
         "labels": _label_pairs(config.profile.required_labels),
+        "tarball_mode": config.tarball_filename is not None,
+        "tarball_filename": config.tarball_filename or "",
     }
 
 

@@ -162,9 +162,30 @@ def _date_stamp() -> str:
     return datetime.datetime.utcnow().strftime("%Y%m%d")
 
 
-def _image_reference(repository: str, env_name: str, tag: Optional[str]) -> str:
+def _resolve_repository(repository: Optional[str], env_name: str) -> str:
+    """Resolve repository using config defaults if not explicitly provided."""
+    if repository is not None:
+        return repository
+    
+    # Load config to get registry and organization
+    from . import config as cfg
+    absconda_config = cfg.load_config()
+    
+    if absconda_config.organization is None:
+        console.print(
+            "[red]Error:[/red] No repository specified and no default organization configured.\n"
+            "Either:\n"
+            "  1. Use --repository flag\n"
+            "  2. Set 'organization' in ~/.config/absconda/config.yaml or /etc/xdg/absconda/config.yaml"
+        )
+        raise typer.Exit(code=1)
+    
     slug = _slugify(env_name)
-    final_tag = tag or f"{slug}-{_date_stamp()}"
+    return f"{absconda_config.registry}/{absconda_config.organization}/{slug}"
+
+
+def _image_reference(repository: str, env_name: str, tag: Optional[str]) -> str:
+    final_tag = tag or _date_stamp()
     return f"{repository}:{final_tag}"
 
 
@@ -463,15 +484,15 @@ def validate(
 
 @app.command()
 def build(
-    repository: str = typer.Option(
-        ...,
+    repository: Optional[str] = typer.Option(
+        None,
         "--repository",
-        help="Target OCI repository (e.g., ghcr.io/org/absconda).",
+        help="Target OCI repository. Defaults to '<registry>/<org>/<env-name>' from config.",
     ),
     tag: Optional[str] = typer.Option(
         None,
         "--tag",
-        help="Optional image tag. Defaults to '<env-name>-YYYYMMDD'.",
+        help="Optional image tag. Defaults to 'YYYYMMDD'.",
     ),
     file: Path = typer.Option(
         Path("env.yaml"),
@@ -543,12 +564,16 @@ def build(
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
+    
+    # Resolve repository with defaults from config
+    resolved_repository = _resolve_repository(repository, report.env.name)
+    
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
     if remote_opts:
         image_ref = _build_image_remote(
             report,
-            repository=repository,
+            repository=resolved_repository,
             tag=tag,
             template=template,
             builder_override=builder_base,
@@ -562,7 +587,7 @@ def build(
     else:
         image_ref = _build_image_local(
             report,
-            repository=repository,
+            repository=resolved_repository,
             tag=tag,
             template=template,
             builder_override=builder_base,
@@ -580,15 +605,15 @@ def build(
 
 @app.command()
 def publish(
-    repository: str = typer.Option(
-        ...,
+    repository: Optional[str] = typer.Option(
+        None,
         "--repository",
-        help="Target OCI repository (e.g., ghcr.io/org/absconda).",
+        help="Target OCI repository. Defaults to '<registry>/<org>/<env-name>' from config.",
     ),
     tag: Optional[str] = typer.Option(
         None,
         "--tag",
-        help="Optional image tag. Defaults to '<env-name>-YYYYMMDD'.",
+        help="Optional image tag. Defaults to 'YYYYMMDD'.",
     ),
     file: Path = typer.Option(
         Path("env.yaml"),
@@ -664,12 +689,16 @@ def publish(
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
+    
+    # Resolve repository with defaults from config
+    resolved_repository = _resolve_repository(repository, report.env.name)
+    
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
     if remote_opts:
         image_ref = _build_image_remote(
             report,
-            repository=repository,
+            repository=resolved_repository,
             tag=tag,
             template=template,
             builder_override=builder_base,
@@ -683,7 +712,7 @@ def publish(
     else:
         image_ref = _build_image_local(
             report,
-            repository=repository,
+            repository=resolved_repository,
             tag=tag,
             template=template,
             builder_override=builder_base,

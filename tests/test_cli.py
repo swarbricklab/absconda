@@ -115,7 +115,7 @@ def test_build_uses_remote_builder_when_requested(monkeypatch, tmp_path: Path) -
     assert calls.get("remote_invoked") is True
     assert calls.get("builder_name") == "default-remote"
     assert calls.get("config_path") == tmp_path / "custom-remote.yaml"
-    assert calls["args"]["image_ref"] == "ghcr.io/example/absconda:cli-demo-20250101"
+    assert calls["args"]["image_ref"] == "ghcr.io/example/absconda:20250101"
 
 
 def test_remote_list_shows_builders(tmp_path: Path) -> None:
@@ -295,7 +295,7 @@ def test_build_invokes_docker_with_expected_tag(monkeypatch, tmp_path: Path) -> 
     build_cmd, build_cwd = commands[0]
     assert build_cwd is None
     assert build_cmd[0:2] == ["docker", "build"]
-    assert "ghcr.io/example/absconda:cli-demo-20251129" in build_cmd
+    assert "ghcr.io/example/absconda:20251129" in build_cmd
     assert build_cmd[-1] == str(tmp_path.resolve())
 
 
@@ -330,7 +330,7 @@ def test_publish_pushes_and_generates_singularity(monkeypatch, tmp_path: Path) -
 
     assert result.exit_code == 0
     assert len(commands) == 3
-    image_ref = "ghcr.io/example/absconda:cli-demo-20251129"
+    image_ref = "ghcr.io/example/absconda:20251129"
     assert commands[0][0][0:2] == ["docker", "build"]
     assert commands[1][0] == ["docker", "push", image_ref]
     assert commands[2][0] == ["singularity", "pull", str(sif_path), f"docker://{image_ref}"]

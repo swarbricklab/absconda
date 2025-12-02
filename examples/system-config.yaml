@@ -4,6 +4,10 @@
 # This file provides shared configuration for all users on the system.
 # Users can override settings in ~/.config/absconda/config.yaml
 
+# Container registry settings
+registry: ghcr.io
+organization: swarbricklab
+
 # GCP settings (override with GCP_PROJECT, GCP_REGION, GCP_ZONE env vars)
 gcp_project: ctp-archive
 gcp_region: australia-southeast1

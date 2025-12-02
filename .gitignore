@@ -33,3 +33,10 @@ build/
 
 # Environment variables
 .env
+
+# Terraform state and plugins
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars

@@ -46,6 +46,10 @@ class AbscondaConfig:
     # Template paths
     template_dir: Optional[Path] = None
     
+    # Container registry settings
+    registry: str = "ghcr.io"
+    organization: Optional[str] = None
+    
     @classmethod
     def empty(cls) -> AbscondaConfig:
         """Create an empty configuration."""
@@ -147,6 +151,10 @@ def load_config() -> AbscondaConfig:
     template_dir_str = merged_data.get("template_dir")
     template_dir = Path(template_dir_str) if template_dir_str else None
     
+    # Extract registry settings
+    registry = merged_data.get("registry", "ghcr.io")
+    organization = merged_data.get("organization")
+    
     return AbscondaConfig(
         remote_builders=remote_builders,
         gcp_project=gcp_project,
@@ -155,6 +163,8 @@ def load_config() -> AbscondaConfig:
         default_policy=default_policy,
         default_profile=default_profile,
         template_dir=template_dir,
+        registry=registry,
+        organization=organization,
     )
 
 

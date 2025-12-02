@@ -106,8 +106,8 @@ Common options:
   -h, --help                Show help message
 
 Build/publish specific options:
-     --repository TEXT     Target OCI repository (required)
-     --tag TEXT            Image tag override; defaults to `<env-name>-YYYYMMDD`
+     --repository TEXT     Target OCI repository (optional; defaults to {registry}/{organization}/{env-name} from config)
+     --tag TEXT            Image tag override; defaults to `YYYYMMDD`
      --context PATH        Docker build context directory (default: current directory)
      --push                Push image after build (build command only; publish always pushes)
    --remote-builder NAME  Optional remote builder target (e.g., `default-remote`); falls back to local Docker when omitted
@@ -129,12 +129,13 @@ All remote subcommands share the same config discovery order as `--remote-builde
 
 ## 7. Architecture & Components
 1. **CLI Frontend** (Typer/Click): parses arguments, handles subcommands.
-2. **Environment Loader**: reads YAML, applies overrides, resolves channels.
-3. **Policy Loader**: parses `absconda-policy.yaml`, resolves profiles, and dynamically imports optional hook modules (e.g., `policy_hooks.py`).
-4. **Template Engine** (Jinja2): renders Dockerfile sections (base layer, multi-stage fragments, runtime activation, entrypoint).
-5. **Diagnostics Module**: aggregates warnings/errors, maps to exit codes (including policy compliance failures).
-6. **Build Orchestrator**: when invoked via `absconda build/publish`, shells out to Docker/Podman, handles tagging, pushes, and optional Singularity pulls while streaming logs.
-7. **Writers**: stream output either to STDOUT or file; ensure atomic writes.
+2. **Config System**: implements XDG Base Directory specification, loading configuration from `/etc/xdg/absconda/config.yaml` (system-wide) and `~/.config/absconda/config.yaml` (user-level) with hierarchical merging. Provides registry and organization defaults for auto-generating repository names.
+3. **Environment Loader**: reads YAML, applies overrides, resolves channels.
+4. **Policy Loader**: parses `absconda-policy.yaml`, resolves profiles, and dynamically imports optional hook modules (e.g., `policy_hooks.py`).
+5. **Template Engine** (Jinja2): renders Dockerfile sections (base layer, multi-stage fragments, runtime activation, entrypoint).
+6. **Diagnostics Module**: aggregates warnings/errors, maps to exit codes (including policy compliance failures).
+7. **Build Orchestrator**: when invoked via `absconda build/publish`, shells out to Docker/Podman, handles tagging, pushes, and optional Singularity pulls while streaming logs.
+8. **Writers**: stream output either to STDOUT or file; ensure atomic writes.
 
 ### Data Flow
 1. CLI receives file path → Environment Loader parses YAML into internal model.
@@ -148,20 +149,27 @@ All remote subcommands share the same config discovery order as `--remote-builde
 - Policy hook API: Python module exposing `before_render(context)`/`after_validate(model)` functions referenced from the config file.
 - Output adapters (future) for OCI build recipes.
 
-## 8. Error Handling & Edge Cases
+## 8. Configuration System
+- **XDG Base Directory support**: Absconda searches for configuration files following the XDG Base Directory specification. System-wide config at `/etc/xdg/absconda/config.yaml` provides defaults for all users (useful for shared HPC systems like NCI). User-level config at `~/.config/absconda/config.yaml` overrides system settings. Environment variables can override both.
+- **Registry and organization**: Config files specify `registry` (e.g., `ghcr.io`) and `organization` (e.g., team or project name). When `--repository` is omitted from build/publish commands, Absconda auto-generates the repository name as `{registry}/{organization}/{env-name}`, where `env-name` comes from the environment YAML's `name:` field (slugified for safety).
+- **Simplified tagging**: Default tag format is `YYYYMMDD` (build date) without prefixes, keeping image references clean and predictable. Users can override with `--tag` for custom versioning schemes.
+- **Remote builder discovery**: The config system extends to remote builder definitions. If `absconda-remote.yaml` isn't found locally, Absconda searches XDG config directories, enabling teams to maintain centralized remote builder configurations.
+- **Team deployment model**: System-wide configs enable "install once, use everywhere" deployment on shared infrastructure. Admins can configure registry credentials, remote builders, and organization defaults in `/etc/xdg/absconda/config.yaml`, while individual users can still override settings locally if needed.
+
+## 9. Error Handling & Edge Cases
 - Missing file → exit code 2 with message "Environment file not found".
 - Invalid YAML → display line/column details from parser.
 - Unsupported OS arch requested → warn and default to known base image.
 - Empty dependencies list → still produce valid Dockerfile with just base image and metadata.
 - Duplicate package specs → deduplicate while preserving order, warn user.
 
-## 9. Testing Strategy
+## 10. Testing Strategy
 - **Unit Tests**: YAML parsing, CLI flag parsing, template rendering, diagnostics.
 - **Golden Tests**: sample `env.yaml` fixtures vs. expected Dockerfile outputs.
 - **Integration Tests**: run `absconda generate` in temporary dirs, ensure idempotency and exit codes.
 - **Static Analysis**: linting (ruff/flake8), typing (mypy/pyright).
 
-## 10. Release Plan & Roadmap
+## 11. Release Plan & Roadmap
 1. **MVP (v0.1)**
    - CLI with `generate` command, default template, base image inference.
    - Basic diagnostics and unit tests.
@@ -172,29 +180,29 @@ All remote subcommands share the same config discovery order as `--remote-builde
 4. **v1.0**
    - Stable API/CLI, comprehensive docs, signed releases.
 
-## 11. Documentation Deliverables
+## 12. Documentation Deliverables
 - Quickstart in `README.md` with examples.
 - Detailed CLI reference (autogenerated help).
 - Template authoring guide explaining placeholders and best practices.
 - Troubleshooting section covering common validation errors.
 - Policy configuration guide explaining profile schema, hook integration, and sample security extensions.
 
-## 12. Environment Resolution Strategy
+## 13. Environment Resolution Strategy
 - **Loose environment files remain the source of truth.** Absconda treats minimally pinned `env.yaml` files as canonical specs, leaning on `mamba`/`conda` to solve them inside the Docker build. Warnings (not hard failures) are emitted for unpinned specs so teams remain aware of the potential drift.
 - **Snapshots as hints, not locks.** A user-supplied snapshot (`--snapshot exported-env.yaml`) is copied next to the generated Dockerfile and hashed into the image as metadata. During `absconda validate`, the snapshot is diffed against the loose spec to flag major version deltas and suggest candidate pins but the solver still runs against the loose spec.
 - **Conflict guidance for humans or agents.** When the solver fails, Absconda emits a `resolution_notes.md` artifact (and optional JSON) that: 1) surfaces the exact solver trace, 2) points to the snapshot for comparison, and 3) outlines a repeatable checklist an on-call engineer or automation agent can follow (e.g., "compare package X between env.yaml and snapshot, try pinning to snapshot version, rerun absconda").
 - **Base image policy.** Builder stages continue to use `mambaorg/micromamba:1.5.5`, while runtime stages now default to the slimmer `debian:bookworm-slim` to keep artifacts lean without sacrificing glibc compatibility. Users can still point to Rocky-Linux or other bases via policy profiles/CLI flags, and experimental Alpine profiles keep their extra guardrails (musl compatibility checks, glibc shims).
 - **Solver customization hooks.** Flags expose solver choice (`--solver mamba|conda`), parallelism, and remote channel allowances so CI can mimic local behavior.
 
-## 13. Container Runtime & Singularity Compatibility
+## 14. Container Runtime & Singularity Compatibility
 
-## 14. Policy Configuration System
+## 15. Policy Configuration System
 - **Config file:** Absconda searches for `absconda-policy.yaml` (current directory → repo root → `~/.config/absconda/`). The file declares version, named profiles, channel policies, required template fragments, metadata rules, and optional security scanners. CLI `--policy` overrides the path.
 - **Profiles:** Each profile (e.g., `default`, `rocky`, `hardened-gpu`) specifies builder/runtime base images, whether multi-stage is mandatory, env prefix, required labels, allowed channels, and default fragments (`non_root_user`, `apt_cleanup`, `gpu_drivers`). Users pick a profile via `--profile` or rely on the config's default.
 - **Hooks:** The config can reference a Python module (e.g., `policy_hooks.py`) that exposes functions like `before_render(context)`, `after_validate(model)`, or `on_build_finished(result)`. Hooks can inject custom RUN instructions, enforce bespoke audits, or emit additional artifacts without forking Absconda.
 - **Transparency & extensibility:** Policies are just YAML + optional Python, living alongside project code so security experts can review/extend them. Absconda surfaces every enforced rule in `absconda validate` output and exit codes, keeping teams informed when a policy blocks a build.
 
-## 15. Build & Publish Workflow
+## 16. Build & Publish Workflow
 - **Generate-first philosophy.** `absconda generate` remains the core command that outputs Dockerfiles for any environment. Users can still redirect to `docker build - < Dockerfile` if they prefer manual control.
 - **Optional orchestration.** `absconda build` and `absconda publish` wrap Docker/Podman and Singularity CLIs. `build` renders templates to a temp scratch dir, runs `docker buildx build`, applies tags, and optionally pushes when `--push` is set. `publish` ensures the image exists (building if necessary), pushes to the configured registry, and optionally runs `singularity pull` to produce a `.sif` artifact.
 - **Pluggable tooling.** The build orchestrator respects environment variables (`DOCKER_HOST`, `APPTAINER_CACHEDIR`) and surfaces exact commands in logs for reproducibility. Future adapters (e.g., `--builder podman`, `--singularity apptainer`) can reuse the same abstraction layer.
@@ -203,12 +211,12 @@ All remote subcommands share the same config discovery order as `--remote-builde
 - **Remote builder management CLI.** The `absconda remote` command group exposes `list`, `provision`, `start`, `stop`, and `status` subcommands so operators can handle builder lifecycles without launching a build. Each command loads the same `absconda-remote.yaml` file consumed by `--remote-builder`, meaning provider metadata (project, zone, Terraform directory, health probes) lives alongside infrastructure code. Provision/start/stop simply shell out to the configured commands, which keeps credentials out of the repo by letting teams reference environment variables such as `${GCP_PROJECT?}` or `${SERVICE_ACCOUNT_JSON}` inside the YAML.
 - **Infrastructure-as-code workflow.** Provisioning for the remote builder relies on Terraform modules (or another IaC tool) checked into the repository. The CLI shell-outs to `terraform apply/destroy` or calls the provider’s CLI/SDK when a builder needs to be created on-demand. Remote builders store a small metadata file (e.g., in object storage) that indicates their active/inactive status so the CLI can skip re-provisioning and focus on start/stop operations. During the initial rollout a single VM handles requests, and the CLI simply waits/retries (with progress messages) if the builder is busy rather than auto-scaling.
 
-## 16. Planned Extensions
+## 17. Planned Extensions
 - **Enhanced renv ergonomics.** Build runners already honor `--renv-lock`; upcoming work explores automatically injecting `r-base` (when missing), caching shared renv libraries between builds, and surfacing clearer diagnostics when `Rscript` is absent from the Conda env.
 - **Multi-arch publishing.** Future profiles can enable Docker buildx multi-arch output (linux/amd64 + linux/arm64) so Apple Silicon users get native performance while the default remains Linux.
 - **Remote caching & diffed uploads.** Investigate BuildKit cache exports, cloud/object-storage layer snapshots, and rsync-style delta uploads so remote builders avoid retransmitting multi-gigabyte contexts.
 - **Autoscaling builders.** When concurrency increases, graduate from a single VM to a managed instance group or queue-backed worker pool so multiple builds can run in parallel without manual coordination.
 
-## 17. Open Questions
+## 18. Open Questions
 - Should `absconda publish` also support OCI registries that require OIDC/device flow login, or do we delegate auth entirely to Docker/Podman (current plan favors delegation)?
 - What heuristics should trigger additional renv safeguards (e.g., verifying `r-base` is pinned, warning when `renv.lock` targets a mismatched R release)?

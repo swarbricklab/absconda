@@ -50,12 +50,13 @@ variable "state_prefix" {
 }
 
 variable "github_token" {
-  description = "GitHub personal access token for GHCR authentication"
+  description = "GitHub token for GHCR authentication (org-level or personal with org access)"
   type        = string
   sensitive   = true
 }
 
 variable "github_username" {
-  description = "GitHub username for GHCR authentication"
+  description = "GitHub username for GHCR authentication (typically the org name for org-level tokens)"
   type        = string
+  default     = "swarbricklab"
 }

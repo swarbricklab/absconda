@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from rich.console import Console
 
+from . import config as cfg
+
 DEFAULT_REMOTE_CONFIG = "absconda-remote.yaml"
 DEFAULT_LOCK_DIR = Path.home() / ".cache" / "absconda" / "remote"
 
@@ -153,21 +155,46 @@ def check_remote_status(definition: RemoteBuilderDefinition) -> RemoteStatus:
 
 
 def _load_builders_section(config_path: Optional[Path]) -> Tuple[Path, dict[str, Any]]:
-    path = _discover_remote_config_path(config_path)
-    if path is None:
-        raise RemoteConfigError(
-            (
-                "Remote builder config not found. Create 'absconda-remote.yaml' or pass "
-                "--remote-config."
-            )
-        )
-
-    data = _read_remote_yaml(path)
-    builders = data.get("builders")
-    if not isinstance(builders, dict) or not builders:
-        raise RemoteConfigError(f"No builders defined in '{path}'.")
-
-    return path, builders
+    """Load builder definitions from config file or XDG config directories.
+    
+    Search order:
+    1. Explicit config_path if provided
+    2. Local absconda-remote.yaml file
+    3. XDG config directories (system-wide and user)
+    """
+    
+    # If explicit path provided, use only that
+    if config_path is not None:
+        if not config_path.exists():
+            raise RemoteConfigError(f"Config file '{config_path}' not found.")
+        data = _read_remote_yaml(config_path)
+        builders = data.get("builders")
+        if not isinstance(builders, dict) or not builders:
+            raise RemoteConfigError(f"No builders defined in '{config_path}'.")
+        return config_path, builders
+    
+    # Try local file first
+    path = _discover_remote_config_path(None)
+    if path is not None:
+        data = _read_remote_yaml(path)
+        builders = data.get("builders")
+        if isinstance(builders, dict) and builders:
+            return path, builders
+    
+    # Fall back to XDG config
+    xdg_config = cfg.load_config()
+    if xdg_config.remote_builders:
+        # Return a synthetic path for display purposes
+        config_dirs = cfg.get_config_dirs()
+        display_path = config_dirs[-1] / "config.yaml" if config_dirs else Path("XDG config")
+        return display_path, xdg_config.remote_builders
+    
+    raise RemoteConfigError(
+        "Remote builder config not found. Options:\n"
+        "  1. Create 'absconda-remote.yaml' in current directory\n"
+        "  2. Create '~/.config/absconda/config.yaml' with remote_builders section\n"
+        "  3. Pass --remote-config <path>"
+    )
 
 
 def build_remote_image(

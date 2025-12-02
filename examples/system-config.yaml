@@ -1,0 +1,61 @@
+# Absconda system-wide configuration
+# Place this file at: /etc/xdg/absconda/config.yaml
+#
+# This file provides shared configuration for all users on the system.
+# Users can override settings in ~/.config/absconda/config.yaml
+
+# GCP settings (override with GCP_PROJECT, GCP_REGION, GCP_ZONE env vars)
+gcp_project: ctp-archive
+gcp_region: australia-southeast1
+gcp_zone: australia-southeast1-a
+
+# Default policy profile
+default_profile: default
+
+# Remote builder definitions
+remote_builders:
+  gcp-builder:
+    # SSH connection details (uses OS Login)
+    host: absconda-builder
+    workspace: /var/lib/absconda
+    
+    # GCP-specific metadata for gcloud commands
+    project: ctp-archive
+    zone: australia-southeast1-a
+    
+    # SSH options for IAP tunnel
+    ssh_options:
+      - "-o"
+      - "ProxyCommand=gcloud compute start-iap-tunnel %h %p --listen-on-stdin --project=ctp-archive --zone=australia-southeast1-a --verbosity=warning"
+      - "-o"
+      - "StrictHostKeyChecking=no"
+      - "-o"
+      - "UserKnownHostsFile=/dev/null"
+    
+    # Lifecycle commands
+    start_command:
+      - "gcloud"
+      - "compute"
+      - "instances"
+      - "start"
+      - "absconda-builder"
+      - "--zone=australia-southeast1-a"
+      - "--project=ctp-archive"
+    
+    stop_command:
+      - "gcloud"
+      - "compute"
+      - "instances"
+      - "stop"
+      - "absconda-builder"
+      - "--zone=australia-southeast1-a"
+      - "--project=ctp-archive"
+    
+    provision_command:
+      - "terraform"
+      - "apply"
+      - "-auto-approve"
+    
+    health_command:
+      - "docker"
+      - "info"

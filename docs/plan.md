@@ -2,6 +2,7 @@
 
 ## 1. Objectives
 - Deliver a CLI that converts Conda env specs into Dockerfiles with first-class multi-stage support and runtime activation guarantees.
+- Support fast-path Docker builds from pre-packed conda tarballs, eliminating solver overhead for users with existing working environments.
 - Provide an optional orchestration path (`absconda build/publish`) that stays lightweight but convenient for CI and Singularity packaging.
 - Ship a transparent, extensible policy configuration system so teams can encode image, security, and metadata requirements without forking the tool.
 - Implement XDG Base Directory config support for system-wide and user-level settings, enabling team-friendly defaults for registry, organization, and remote builders on shared infrastructure like NCI.
@@ -18,6 +19,7 @@
 | **Phase 3 – Policy Configuration System (Weeks 4-5)** | YAML schema, profile resolution, hook loading, enforcement messages. | `absconda-policy.yaml` parser, sample policies, hook API docs, validation integration tests. |
 | **Phase 4 – Build & Publish Commands (Weeks 5-6)** | Orchestrate Docker/Podman builds, registry pushes, optional Singularity pulls. | `absconda build`, `absconda publish`, streaming logs, error handling, e2e tests using local registry/mocked Singularity. |
 | **Phase 5 – Docs & Hardening (Weeks 6-7)** | README refresh, spec alignment, troubleshooting and policy guides, release prep. | Updated docs, CI badges, release notes, v0.1 tag. |
+| **Phase 5.5 – Tarball Fast-Path (Week 7)** | Add `--tarball` flag and simplified template for pre-packed environments. | CLI flag handling, tarball validation, template variant, unit tests, integration test with sample tarball. |
 | **Phase 6 – Remote Build Server (Weeks 7-8)** | Provision a cloud/on-prem builder VM via Terraform, ship CLI remote mode, document operational runbooks. | Terraform module + state docs, `--remote-builder/--remote-off/--remote-wait` flags, tarball upload agent, low-concurrency locking + wait/retry messaging. |
 
 ## 3. Detailed Tasks
@@ -29,11 +31,15 @@
    - Integration with CLI for optional --repository/--tag flags.
 2. **Environment Loader**
    - Schema validation (name, channels, dependencies, prefix).
+   - Tarball input mode: detect `--tarball` flag, validate tarball exists and is readable.
+   - Copy tarball into Docker build context with deterministic naming.
+   - Extract environment metadata from tarball when possible (conda-meta files).
    - Snapshot diff + warning surfaces.
    - Channel normalization for policy allowlists.
 3. **Template System**
    - Fragment registry (base, builder, runtime, activation, extra RUN hooks).
    - Multi-stage flow that packages the env via `conda-pack`, unpacks it in the runtime stage, and records dependency manifests (`lddtree` summaries) for transparency.
+   - Tarball mode template variant: simplified Dockerfile that copies pre-packed tarball and unpacks directly, skipping conda/mamba solver entirely.
    - Entry-point script generator and tests across sh/bash.
    - Optional renv stage that restores `renv.lock` inside the builder env and injects `.Rprofile`/`R_LIBS` wiring in the runtime image.
 4. **Policy Engine**
@@ -76,6 +82,7 @@
 | Singularity CLI unavailable in CI | Blocks `.sif` generation | Detect binary presence, make `--singularity-out` optional, document installation steps. |
 | Auth complexity for publish | User frustration | Delegate login to Docker/Podman, provide clear error guidance, support env-based creds. |
 | Remote builder drift or idle cost | Stale Terraform state, unexpected cloud spend | Store Terraform state remotely, add automated stop-after-build logic, and expose `absconda remote status` so teams can verify builder state before running jobs. |
+| Tarball corruption or incompatible format | Build failures or runtime crashes | Validate tarball file signature, check for conda-meta directory structure, emit clear error if tarball format is unexpected. |
 
 ## 6. Documentation Plan
 - Expand `README.md` with quickstart, multi-stage explanation, Singularity workflow.
@@ -94,4 +101,6 @@
 - Multi-arch builds (amd64 + arm64) can be produced via a profile toggle without altering the default Linux/amd64 output.
 - Policy engine can block disallowed channels and enforce labels, with clear messages.
 - Documentation enables a new user to go from env.yaml to pushed image + Singularity artifact in <30 minutes.
+- Tarball mode (`--tarball`) successfully builds Docker images from conda-packed environments without invoking conda/mamba solvers.
+- Containers built from tarballs activate environments correctly and match functionality of YAML-based builds.
 - Renv integration restores an `renv.lock` fixture and exposes R packages without manual activation steps (unit + integration tests enforce this path).

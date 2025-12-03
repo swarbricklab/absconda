@@ -13,7 +13,7 @@ Absconda bridges the gap between conda's reproducible environments and container
 🚀 **Multi-Stage Builds** - Automatic optimization that reduces image sizes by 40-60%  
 🔐 **Policy Validation** - Enforce security and compliance rules organization-wide  
 🏗️ **Remote Builders** - Offload builds to cloud instances with automatic provisioning  
-🧪 **HPC Integration** - First-class Singularity support with module files and wrappers  
+🧪 **HPC Integration** - Singularity/Apptainer support with module files and wrappers  
 📦 **R + renv Support** - Combine conda environments with R package management  
 🎯 **Flexible Deployment** - Multiple modes: full-env, tarball, requirements, export-explicit  
 🔧 **Custom Templates** - Jinja2-based system for advanced customization
@@ -166,7 +166,7 @@ Absconda solves this by:
 | Feature | Absconda | repo2docker | docker-conda | Manual Dockerfile |
 |---------|----------|-------------|--------------|-------------------|
 | Multi-stage optimization | ✅ Automatic | ❌ No | ❌ No | ⚠️ Manual |
-| Singularity integration | ✅ First-class | ❌ No | ❌ No | ⚠️ Manual |
+| Singularity integration | ✅ Built-in | ❌ No | ❌ No | ⚠️ Manual |
 | HPC modules | ✅ Built-in | ❌ No | ❌ No | ⚠️ Manual |
 | Policy enforcement | ✅ Yes | ❌ No | ❌ No | ❌ No |
 | Remote builders | ✅ Yes | ❌ No | ❌ No | ❌ No |

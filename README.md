@@ -1,8 +1,8 @@
 # Absconda
 
-[![PyPI version](https://badge.fury.io/py/absconda.svg)](https://badge.fury.io/py/absconda)
+[![PyPI version](https://badge.fury.io/py/absconda.svg)](https://pypi.org/project/absconda/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 **Turn conda environments into optimized container images for development and HPC deployment.**
 
@@ -69,19 +69,23 @@ docker run --rm ghcr.io/myorg/my-analysis:latest python -c "import numpy; print(
 **For HPC with Singularity:**
 
 ```bash
-# Build Docker image and convert to Singularity
+# Build and push Docker image, then convert to Singularity
+absconda publish \
+  --file environment.yaml \
+  --repository ghcr.io/myorg/my-analysis \
+  --tag latest \
+  --singularity-out my-analysis.sif
+
+# Or manually convert after building
 absconda build \
   --file environment.yaml \
   --repository ghcr.io/myorg/my-analysis \
   --tag latest \
   --push
 
-# Convert to Singularity
-absconda singularity \
-  --image ghcr.io/myorg/my-analysis:latest \
-  --output my-analysis.sif
+singularity pull my-analysis.sif docker://ghcr.io/myorg/my-analysis:latest
 
-# Generate HPC module
+# Generate HPC module and wrappers
 absconda module \
   --image my-analysis.sif \
   --module-path /apps/modules/my-analysis/1.0

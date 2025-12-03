@@ -91,6 +91,8 @@ Commands:
    validate   Check env file without output
    build      Render Dockerfile, run docker build, optionally push
    publish    Build, push, and optionally emit a Singularity .sif via `singularity pull`
+   wrap       Generate wrapper scripts for container commands
+   module     Generate environment module file
 
 Common options:
   -f, --file PATH           Conda environment file (default: env.yaml)
@@ -130,6 +132,27 @@ absconda remote status <builder> [--config PATH]
 ```
 
 All remote subcommands share the same config discovery order as `--remote-builder` and simply execute the commands defined in `absconda-remote.yaml`, making it easy to wrap Terraform or cloud CLIs without duplicating logic.
+
+Wrapper generation commands:
+
+```
+absconda wrap --image IMAGE_REF --commands CMD1,CMD2 [OPTIONS]
+  --image TEXT              Container image reference (e.g., ghcr.io/org/env:tag)
+  --commands TEXT           Comma-separated list of commands to wrap
+  --runtime TEXT            Container runtime: singularity (default) or docker
+  --output-dir PATH         Directory for wrapper scripts (default from config)
+  --image-cache PATH        SIF cache directory for Singularity (default from config)
+  --extra-mounts PATH,PATH  Additional volume mounts (comma-separated paths)
+  --env VAR1,VAR2           Additional environment variables to pass through
+  --gpu                     Enable GPU support (--nv for Singularity, --gpus all for Docker)
+
+absconda module --name NAME --wrapper-dir PATH [OPTIONS]
+  --name TEXT               Module name with version (e.g., myenv/1.0)
+  --wrapper-dir PATH        Directory containing wrapper scripts
+  --output-dir PATH         Directory for module file (default from config)
+  --description TEXT        Module description for help text
+  --image TEXT              Container image reference (for metadata)
+  --runtime TEXT            Container runtime: singularity or docker
 ```
 
 ## 7. Architecture & Components
@@ -235,14 +258,191 @@ All remote subcommands share the same config discovery order as `--remote-builde
 - **Delegated authentication.** Absconda does not manage registry credentials directly; it surfaces helpful messages if Docker/Podman lacks a login and points users to the relevant CLI commands, keeping the security model simple.
 - **Remote build servers.** Users can opt into a `--remote-builder` profile (starting with `default-remote`) that provisions or resumes a VM on the configured provider (AWS, Azure, other cloud/on-prem targets) preloaded with Docker Engine and Buildx. Absconda always performs validation and Dockerfile rendering locally, then tars the scratch build context (Dockerfile, env files, helper assets) and streams it to the VM via SSH/SCP. A small manifest accompanies the tarball so the remote agent can double-check metadata (profile, tag, policy hash) before running `docker build`. After the build/publish operation, the coordinator can optionally stop the VM (`--remote-off`) or keep it warm for a short window; callers can also request a maximum wait time (`--remote-wait`) before falling back or exiting.
 - **Remote builder management CLI.** The `absconda remote` command group exposes `list`, `provision`, `start`, `stop`, and `status` subcommands so operators can handle builder lifecycles without launching a build. Each command loads the same `absconda-remote.yaml` file consumed by `--remote-builder`, meaning provider metadata (project, zone, Terraform directory, health probes) lives alongside infrastructure code. Provision/start/stop simply shell out to the configured commands, which keeps credentials out of the repo by letting teams reference environment variables such as `${GCP_PROJECT?}` or `${SERVICE_ACCOUNT_JSON}` inside the YAML.
-- **Infrastructure-as-code workflow.** Provisioning for the remote builder relies on Terraform modules (or another IaC tool) checked into the repository. The CLI shell-outs to `terraform apply/destroy` or calls the provider’s CLI/SDK when a builder needs to be created on-demand. Remote builders store a small metadata file (e.g., in object storage) that indicates their active/inactive status so the CLI can skip re-provisioning and focus on start/stop operations. During the initial rollout a single VM handles requests, and the CLI simply waits/retries (with progress messages) if the builder is busy rather than auto-scaling.
+- **Infrastructure-as-code workflow.** Provisioning for the remote builder relies on Terraform modules (or another IaC tool) checked into the repository. The CLI shell-outs to `terraform apply/destroy` or calls the provider's CLI/SDK when a builder needs to be created on-demand. Remote builders store a small metadata file (e.g., in object storage) that indicates their active/inactive status so the CLI can skip re-provisioning and focus on start/stop operations. During the initial rollout a single VM handles requests, and the CLI simply waits/retries (with progress messages) if the builder is busy rather than auto-scaling.
 
-## 19. Planned Extensions
+## 19. Wrapper Scripts and Environment Modules
+- **Transparent container execution.** After publishing a containerized environment, users often want to run commands (e.g., `python`, `jupyter`, `R`) as if they were installed locally, without manually typing `docker run` or `singularity exec` invocations. Absconda provides `wrap` and `module` commands to generate wrapper scripts and environment module files that make containers feel like native executables on HPC systems.
+
+### Wrapper Scripts (`absconda wrap`)
+- **Purpose:** Generate executable wrapper scripts for specified commands that transparently execute inside a container runtime (Docker or Singularity).
+- **Explicit command list:** Users specify which commands to wrap via `--commands python,pip,jupyter`. Absconda assumes these commands exist in the container's PATH and generates one wrapper script per command.
+- **Argument preservation:** Wrappers pass all arguments through unmodified using proper shell quoting (`"$@"`), preserving spaces, quotes, and special characters. Exit codes, stdin, stdout, and stderr are all preserved.
+- **Runtime selection:** Wrappers default to Singularity (HPC-friendly) unless `--runtime docker` is specified. Separate wrapper scripts are generated for each runtime to avoid runtime detection overhead.
+- **Singularity SIF caching:** When generating Singularity wrappers, Absconda converts the Docker image to a Singularity SIF file and caches it in a configurable location (default: `~/.local/absconda/sif-cache/`). Wrappers check if the SIF exists and pull it on first use. SIF filenames are sanitized from image references: `ghcr.io/lab/myenv:1.0` → `lab_myenv_1.0.sif`.
+- **Volume mounts:** Wrappers mount only the paths explicitly specified via `--extra-mounts` or configured in `absconda-config.yaml` under `wrappers.default_mounts`. No automatic root filesystem mounting; users must specify every required path (e.g., `$HOME`, `$PWD`, `/scratch/$PROJECT`, `/g/data/$PROJECT`). Environment variable expansion happens at wrapper runtime.
+- **Environment variable handling:** Wrappers pass through only explicitly allowed environment variables defined in `wrappers.env_passthrough` config (default: `USER`, `HOME`, `LANG`, `TZ`). All other variables are filtered out. Variables in `wrappers.env_filter` (default: `PATH`, `LD_LIBRARY_PATH`, `PYTHONPATH`) are explicitly blocked to avoid conflicts with the container's environment. CLI flag `--env VAR1,VAR2` adds additional passthrough variables.
+- **GPU support:** Optional `--gpu` flag adds appropriate GPU forwarding options (`--nv` for Singularity, `--gpus all` for Docker). GPU flags are only added when explicitly requested, not auto-detected.
+- **Network behavior:** Singularity wrappers use default Singularity network behavior (host network). Docker wrappers use isolated networking by default; future `--network host` flag can enable host networking when needed.
+- **Output location:** Wrappers are written to `--output-dir` (CLI) or `wrappers.default_output_dir` (config, default: `~/.local/absconda/wrappers/<image-name>`). This directory typically gets added to PATH via an environment module.
+
+**Example wrapper (Singularity):**
+```bash
+#!/bin/bash
+# Auto-generated by absconda wrap for ghcr.io/lab/myenv:1.0
+# Command: python
+set -euo pipefail
+
+SIF_CACHE="${HOME}/.local/absconda/sif-cache"
+SIF_FILE="${SIF_CACHE}/lab_myenv_1.0.sif"
+IMAGE_REF="docker://ghcr.io/lab/myenv:1.0"
+
+# Pull SIF if missing
+if [[ ! -f "$SIF_FILE" ]]; then
+    mkdir -p "$SIF_CACHE"
+    echo "Pulling Singularity image to cache..." >&2
+    singularity pull "$SIF_FILE" "$IMAGE_REF"
+fi
+
+# Build mount arguments from config
+MOUNTS=()
+MOUNTS+=("-B" "$HOME")
+MOUNTS+=("-B" "$PWD")
+# Additional mounts from config/CLI...
+
+exec singularity exec \
+    "${MOUNTS[@]}" \
+    "$SIF_FILE" \
+    python "$@"
+```
+
+**CLI usage:**
+```bash
+absconda wrap \
+  --image ghcr.io/lab/myenv:1.0 \
+  --commands python,pip,jupyter \
+  --runtime singularity \
+  --output-dir /g/data/$PROJECT/modules/myenv/1.0/bin \
+  --image-cache /scratch/$PROJECT/.singularity \
+  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT \
+  --gpu
+```
+
+### Environment Modules (`absconda module`)
+- **Purpose:** Generate Tcl environment module files that add wrapper directories to PATH and set helpful environment variables. Modules provide a familiar interface for HPC users: `module load myenv/1.0` makes wrapped commands available.
+- **Module format:** Traditional Tcl format for maximum compatibility with environment modules systems on HPC clusters.
+- **Module structure:** Sets `module-whatis` description, prepends wrapper directory to PATH, exports variables indicating image reference and runtime, and configures automatic conflicts with other versions of the same module.
+- **Conflict management:** Modules automatically conflict with other versions (e.g., `conflict myenv` prevents `myenv/1.0` and `myenv/2.0` from loading simultaneously).
+- **Metadata variables:** Exports `<MODULE>_VERSION`, `<MODULE>_IMAGE`, `<MODULE>_RUNTIME` environment variables (module name uppercased) for introspection and debugging.
+- **Help text:** Includes `ModulesHelp` procedure showing description, image reference, and runtime information when users run `module help myenv/1.0`.
+- **Output location:** Module files are written to `--output-dir` (CLI) or `modules.default_output_dir` (config, default: `~/.local/absconda/modulefiles`). Users add this directory to `MODULEPATH` or administrators install to system module directories (e.g., `/opt/Modules/modulefiles`).
+
+**Example module file (Tcl):**
+```tcl
+#%Module1.0
+##
+## Auto-generated by absconda module
+## Image: ghcr.io/lab/myenv:1.0
+## Runtime: singularity
+##
+proc ModulesHelp { } {
+    puts stderr "Python 3.11 environment with TensorFlow GPU support"
+    puts stderr ""
+    puts stderr "Containerized environment: ghcr.io/lab/myenv:1.0"
+    puts stderr "Runtime: singularity"
+    puts stderr "Wrapped commands: python, pip, jupyter"
+}
+
+module-whatis "Python 3.11 with TensorFlow GPU (containerized)"
+
+conflict myenv
+
+prepend-path PATH /g/data/xy00/modules/myenv/1.0/bin
+
+setenv MYENV_VERSION 1.0
+setenv MYENV_IMAGE ghcr.io/lab/myenv:1.0
+setenv MYENV_RUNTIME singularity
+```
+
+**CLI usage:**
+```bash
+absconda module \
+  --name myenv/1.0 \
+  --wrapper-dir /g/data/$PROJECT/modules/myenv/1.0/bin \
+  --output-dir /g/data/$PROJECT/modulefiles \
+  --description "Python 3.11 with TensorFlow GPU support" \
+  --image ghcr.io/lab/myenv:1.0 \
+  --runtime singularity
+```
+
+### Configuration (`absconda-config.yaml`)
+Wrapper and module generation behavior is controlled by config file settings:
+
+```yaml
+wrappers:
+  default_runtime: singularity  # or docker
+  default_output_dir: ~/.local/absconda/wrappers
+  image_cache: ~/.local/absconda/sif-cache
+  default_mounts:
+    - $HOME
+    - $PWD
+    # NCI Gadi specific paths:
+    - /scratch/$PROJECT
+    - /g/data/$PROJECT
+  env_passthrough:  # Only these env vars are passed to container
+    - USER
+    - HOME
+    - LANG
+    - TZ
+  env_filter:  # Explicitly blocked even if in passthrough
+    - PATH
+    - LD_LIBRARY_PATH
+    - PYTHONPATH
+
+modules:
+  default_output_dir: ~/.local/absconda/modulefiles
+  format: tcl  # Future: lua support
+```
+
+### Complete Workflow Example
+```bash
+# 1. Build and publish containerized environment
+absconda publish --file env.yaml \
+  --repository ghcr.io/lab/myenv \
+  --tag 1.0 \
+  --push
+
+# 2. Generate wrapper scripts for common commands
+absconda wrap \
+  --image ghcr.io/lab/myenv:1.0 \
+  --commands python,pip,jupyter,nvidia-smi \
+  --runtime singularity \
+  --output-dir /g/data/$PROJECT/modules/myenv/1.0/bin \
+  --gpu
+
+# 3. Generate environment module file
+absconda module \
+  --name myenv/1.0 \
+  --wrapper-dir /g/data/$PROJECT/modules/myenv/1.0/bin \
+  --output-dir /g/data/$PROJECT/modulefiles \
+  --description "Python 3.11 with TensorFlow GPU" \
+  --image ghcr.io/lab/myenv:1.0 \
+  --runtime singularity
+
+# 4. Use the module (as end user)
+module use /g/data/$PROJECT/modulefiles
+module load myenv/1.0
+python train.py --gpu  # Runs inside container transparently
+```
+
+### Design Rationale
+- **Separation of concerns:** `wrap` and `module` are separate commands because wrappers and modules serve different purposes. Users might want wrappers without modules (personal use) or generate multiple module variants pointing to the same wrappers (testing/production).
+- **Explicit over automatic:** Explicitly listing commands to wrap avoids accidentally wrapping system utilities or creating naming conflicts. Mount paths and environment variables are also explicit to prevent security issues and unexpected behavior.
+- **Runtime-specific wrappers:** Separate Docker and Singularity wrappers eliminate runtime detection overhead and allow optimization for each platform's idioms.
+- **SIF caching for performance:** Converting Docker images to SIF files upfront improves Singularity startup time and enables offline usage once cached.
+- **Module standards:** Tcl modules are universally supported on HPC systems. Conflicts and metadata variables follow established conventions.
+- **HPC deployment model:** Output directories default to user-local paths but CLI flags support system-wide installation. This supports both personal workflows and team/cluster-wide deployments on systems like NCI Gadi.
+
+## 20. Planned Extensions
 - **Enhanced renv ergonomics.** Build runners already honor `--renv-lock`; upcoming work explores automatically injecting `r-base` (when missing), caching shared renv libraries between builds, and surfacing clearer diagnostics when `Rscript` is absent from the Conda env.
 - **Multi-arch publishing.** Future profiles can enable Docker buildx multi-arch output (linux/amd64 + linux/arm64) so Apple Silicon users get native performance while the default remains Linux.
 - **Remote caching & diffed uploads.** Investigate BuildKit cache exports, cloud/object-storage layer snapshots, and rsync-style delta uploads so remote builders avoid retransmitting multi-gigabyte contexts.
 - **Autoscaling builders.** When concurrency increases, graduate from a single VM to a managed instance group or queue-backed worker pool so multiple builds can run in parallel without manual coordination.
+- **Lua module support.** Add `--format lua` flag to `absconda module` for modern Lmod-based module systems.
+- **Wrapper auto-discovery.** Option to scan container's `/bin` and `/usr/bin` directories to auto-generate wrappers for all executables (with safeguards to exclude system utilities).
+- **Registry authentication helpers.** Detect when Singularity SIF pulls fail due to missing Docker credentials and provide actionable guidance for configuring `singularity remote login`.
 
-## 20. Open Questions
+## 21. Open Questions
 - Should `absconda publish` also support OCI registries that require OIDC/device flow login, or do we delegate auth entirely to Docker/Podman (current plan favors delegation)?
 - What heuristics should trigger additional renv safeguards (e.g., verifying `r-base` is pinned, warning when `renv.lock` targets a mismatched R release)?
+- Should wrappers support automatic retry logic if SIF pull fails due to transient network issues?
+- Do we need a `--network host` flag for Docker wrappers, or is the default isolated networking sufficient for most use cases?

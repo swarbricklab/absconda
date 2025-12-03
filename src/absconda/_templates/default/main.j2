@@ -3,6 +3,9 @@
 {% if tarball_mode %}
 {# Tarball mode: simpler runtime-only template #}
 {% include "fragments/tarball_runtime.j2" %}
+{% elif requirements_mode %}
+{# Requirements mode: pip-based Python environment #}
+{% include "fragments/requirements_runtime.j2" %}
 {% elif multi_stage %}
 {% include "fragments/builder_stage.j2" %}
 
@@ -11,6 +14,8 @@
 {% include "fragments/single_stage.j2" %}
 {% endif %}
 
+{% if not requirements_mode %}
 {% include "fragments/export_block.j2" %}
+{% endif %}
 
 CMD {{ runtime_command }}

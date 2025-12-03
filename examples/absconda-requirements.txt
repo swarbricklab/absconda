@@ -1,0 +1,6 @@
+click>=8.1,<8.2
+typer[all]>=0.12,<0.13
+rich>=13.7,<14
+pydantic>=2.7,<3
+pyyaml>=6.0.1,<7
+jinja2>=3.1,<4

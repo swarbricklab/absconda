@@ -37,6 +37,7 @@ class RenderConfig:
     runtime_base: str
     env: Optional[EnvSpec] = None
     tarball_filename: Optional[str] = None
+    requirements_filename: Optional[str] = None
     env_name: Optional[str] = None
     template_path: Optional[Path] = None
     renv_lock: Optional[str] = None
@@ -58,9 +59,9 @@ def render_dockerfile(config: RenderConfig) -> str:
     env_dir = _join_path(env_prefix, env_name)
     export_block = _build_export_block(env_dir, env_name)
 
-    # Handle tarball mode differently
-    if config.tarball_filename:
-        env_yaml = ""  # No env.yaml in tarball mode
+    # Handle tarball and requirements modes differently
+    if config.tarball_filename or config.requirements_filename:
+        env_yaml = ""  # No env.yaml in tarball or requirements mode
     elif config.env:
         env_yaml = _env_yaml(config.env)
     else:
@@ -161,6 +162,8 @@ def _build_context(
         "labels": _label_pairs(config.profile.required_labels),
         "tarball_mode": config.tarball_filename is not None,
         "tarball_filename": config.tarball_filename or "",
+        "requirements_mode": config.requirements_filename is not None,
+        "requirements_filename": config.requirements_filename or "",
     }
 
 

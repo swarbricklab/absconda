@@ -1,0 +1,12 @@
+FROM {{ runtime_base }} AS runtime
+{% if labels %}
+{% for label in labels %}
+LABEL {{ label }}
+{% endfor %}
+{% endif %}
+
+# Copy requirements.txt and install packages with pip
+COPY {{ requirements_filename }} /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+

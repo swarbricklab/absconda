@@ -34,6 +34,15 @@ class TarballSpec:
 
 
 @dataclass(slots=True)
+class RequirementsSpec:
+    """Representation of a pip requirements.txt file."""
+
+    name: str
+    path: Path
+    requirements: List[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Snapshot:
     """Basic snapshot metadata."""
 
@@ -47,12 +56,15 @@ class LoadReport:
 
     env: Optional[EnvSpec]
     tarball: Optional[TarballSpec]
+    requirements: Optional[RequirementsSpec]
     snapshot: Optional[Snapshot]
     warnings: List[str] = field(default_factory=list)
     
     @property
     def env_name(self) -> str:
-        """Get the environment name from either env or tarball."""
+        """Get the environment name from env, tarball, or requirements."""
+        if self.requirements:
+            return self.requirements.name
         if self.tarball:
             return self.tarball.name
         if self.env:
@@ -199,7 +211,7 @@ def load_environment(env_path: Path, snapshot_path: Optional[Path] = None) -> Lo
             "Environment has no dependencies; resulting image will contain only the base image."
         )
 
-    return LoadReport(env=env_spec, tarball=None, snapshot=snapshot, warnings=warnings)
+    return LoadReport(env=env_spec, tarball=None, requirements=None, snapshot=snapshot, warnings=warnings)
 
 
 def load_tarball(
@@ -249,4 +261,79 @@ def load_tarball(
             except EnvironmentLoadError as exc:
                 warnings.append(str(exc))
     
-    return LoadReport(env=env_spec, tarball=tarball_spec, snapshot=snapshot, warnings=warnings)
+    return LoadReport(env=env_spec, tarball=tarball_spec, requirements=None, snapshot=snapshot, warnings=warnings)
+
+
+def _load_requirements(requirements_path: Path, env_name: Optional[str] = None) -> RequirementsSpec:
+    """Load a pip requirements.txt file."""
+    if not requirements_path.exists():
+        raise EnvironmentLoadError(f"Requirements file '{requirements_path}' not found.")
+    
+    if not requirements_path.is_file():
+        raise EnvironmentLoadError(f"Requirements path '{requirements_path}' is not a file.")
+    
+    try:
+        content = requirements_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise EnvironmentLoadError(f"Failed to read '{requirements_path}': {exc}") from exc
+    
+    # Parse requirements (basic - just non-empty, non-comment lines)
+    requirements = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            requirements.append(stripped)
+    
+    # Use provided name or derive from filename
+    if env_name is None:
+        env_name = requirements_path.stem
+        if env_name == "requirements":
+            env_name = "python-app"
+    
+    return RequirementsSpec(name=env_name, path=requirements_path, requirements=requirements)
+
+
+def load_requirements(
+    requirements_path: Path,
+    env_name: Optional[str] = None,
+    snapshot_path: Optional[Path] = None,
+) -> LoadReport:
+    """Load a pip requirements.txt file.
+    
+    Args:
+        requirements_path: Path to the requirements.txt file
+        env_name: Optional name for the environment (derived from filename if not provided)
+        snapshot_path: Optional snapshot for documentation
+        
+    Returns:
+        LoadReport with requirements spec
+    """
+    
+    warnings: list[str] = []
+    
+    # Load requirements (required)
+    requirements_spec = _load_requirements(requirements_path, env_name)
+    
+    # Optionally load snapshot
+    snapshot: Optional[Snapshot] = None
+    if snapshot_path is not None:
+        if not snapshot_path.exists():
+            warnings.append(f"Snapshot '{snapshot_path}' was not found; continuing without it.")
+        else:
+            try:
+                snapshot = _load_snapshot(snapshot_path)
+            except EnvironmentLoadError as exc:
+                warnings.append(str(exc))
+    
+    if not requirements_spec.requirements:
+        warnings.append(
+            "Requirements file is empty; resulting image will contain only the base Python image."
+        )
+    
+    return LoadReport(
+        env=None, 
+        tarball=None, 
+        requirements=requirements_spec, 
+        snapshot=snapshot, 
+        warnings=warnings
+    )

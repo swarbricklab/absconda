@@ -22,7 +22,13 @@ import typer
 from rich.console import Console
 
 from . import __version__, remote
-from .environment import EnvironmentLoadError, LoadReport, load_environment, load_tarball
+from .environment import (
+    EnvironmentLoadError,
+    LoadReport,
+    load_environment,
+    load_requirements,
+    load_tarball,
+)
 from .policy import PolicyLoadError, PolicyResolution, load_policy
 from .templates import (
     DEFAULT_BUILDER_IMAGE,
@@ -97,23 +103,34 @@ def main(
 def _load_with_feedback(
     file: Optional[Path], 
     tarball: Optional[Path],
+    requirements: Optional[Path],
     snapshot: Optional[Path]
 ) -> LoadReport:
-    """Helper that loads env files or tarballs and renders Typer-friendly errors."""
+    """Helper that loads env files, tarballs, or requirements and renders Typer-friendly errors."""
     
-    if tarball is not None and file is not None:
-        # Both provided: use tarball for environment, file for metadata
+    # Count how many input types were provided
+    inputs_provided = sum([
+        file is not None,
+        tarball is not None,
+        requirements is not None,
+    ])
+    
+    if inputs_provided > 1:
         console.print(
-            "[bold yellow]info[/bold yellow]: Both --file and --tarball provided. "
-            "Using tarball for environment content and YAML for metadata."
+            "[bold yellow]warning[/bold yellow]: Multiple input types provided. "
+            "Only one of --file, --tarball, or --requirements should be specified."
         )
     
-    if tarball is None and file is None:
-        console.print("[red]Error:[/red] Either --file or --tarball must be provided.")
+    if inputs_provided == 0:
+        console.print(
+            "[red]Error:[/red] One of --file, --tarball, or --requirements must be provided."
+        )
         raise typer.Exit(code=1)
 
     try:
-        if tarball is not None:
+        if requirements is not None:
+            return load_requirements(requirements, snapshot_path=snapshot)
+        elif tarball is not None:
             return load_tarball(tarball, file, snapshot)
         else:
             # file is guaranteed to not be None here
@@ -284,6 +301,16 @@ def _build_image_local(
             import shutil
             tarball_dest = Path(temp_dir) / "conda-env.tar.gz"
             shutil.copy2(report.tarball.path, tarball_dest)
+        
+        # If using requirements, copy it into the build context
+        if report.requirements:
+            import shutil
+            requirements_dest = Path(temp_dir) / "requirements.txt"
+            shutil.copy2(report.requirements.path, requirements_dest)
+
+        # For tarball/requirements modes, use temp_dir as build context (self-contained)
+        # Otherwise use the specified context directory (for env.yaml and other files)
+        build_context = temp_dir if (report.tarball or report.requirements) else str(context_path)
 
         _run_command(
             [
@@ -293,7 +320,7 @@ def _build_image_local(
                 image_ref,
                 "-f",
                 str(dockerfile_path),
-                str(context_path),
+                build_context,
             ]
         )
 
@@ -338,6 +365,7 @@ def _build_image_remote(
         "remote_builder": remote_options.builder,
         "push": push,
         "tarball_mode": report.tarball is not None,
+        "requirements_mode": report.requirements is not None,
     }
 
     try:
@@ -395,9 +423,15 @@ def _render_dockerfile(
     policy_resolution = _active_policy()
     profile = policy_resolution.profile
 
-    builder_base = builder_override or profile.builder_base or DEFAULT_BUILDER_IMAGE
-    runtime_default = profile.runtime_base or DEFAULT_RUNTIME_IMAGE
-    runtime_base = runtime_override or runtime_default
+    # For requirements mode, use Python base images instead of conda images
+    if report.requirements:
+        builder_base = builder_override or "python:3.11-slim"
+        runtime_default = "python:3.11-slim"
+        runtime_base = runtime_override or runtime_default
+    else:
+        builder_base = builder_override or profile.builder_base or DEFAULT_BUILDER_IMAGE
+        runtime_default = profile.runtime_base or DEFAULT_RUNTIME_IMAGE
+        runtime_base = runtime_override or runtime_default
 
     multi_stage_default = profile.multi_stage if profile.multi_stage is not None else True
     multi_stage = multi_stage_override if multi_stage_override is not None else multi_stage_default
@@ -405,6 +439,7 @@ def _render_dockerfile(
     config = RenderConfig(
         env=report.env,
         tarball_filename="conda-env.tar.gz" if report.tarball else None,
+        requirements_filename="requirements.txt" if report.requirements else None,
         env_name=report.env_name,
         profile=profile,
         multi_stage=multi_stage,
@@ -427,13 +462,19 @@ def generate(
         None,
         "--file",
         "-f",
-        help="Path to the Conda environment file (required unless --tarball is specified).",
+        help="Path to the Conda environment file (required unless --tarball or --requirements is specified).",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
         help="Path to a pre-packed conda tarball (alternative to --file).",
+    ),
+    requirements: Optional[Path] = typer.Option(
+        None,
+        "--requirements",
+        "-r",
+        help="Path to a pip requirements.txt file (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -472,15 +513,15 @@ def generate(
         help="Path to an renv.lock file to restore alongside the Conda environment.",
     ),
 ) -> None:
-    """Generate a Dockerfile from the provided environment file or tarball."""
+    """Generate a Dockerfile from the provided environment file, tarball, or requirements."""
 
     _print_policy_banner()
     
-    # Provide default for file if neither file nor tarball is specified
-    if file is None and tarball is None:
+    # Provide default for file if no input is specified
+    if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
     
-    report = _load_with_feedback(file, tarball, snapshot)
+    report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
@@ -506,13 +547,19 @@ def validate(
         None,
         "--file",
         "-f",
-        help="Environment file to validate (required unless --tarball is specified).",
+        help="Environment file to validate (required unless --tarball or --requirements is specified).",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
         help="Path to a pre-packed conda tarball (alternative to --file).",
+    ),
+    requirements: Optional[Path] = typer.Option(
+        None,
+        "--requirements",
+        "-r",
+        help="Path to a pip requirements.txt file (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -524,11 +571,11 @@ def validate(
 
     _print_policy_banner()
     
-    # Provide default for file if neither file nor tarball is specified
-    if file is None and tarball is None:
+    # Provide default for file if no input is specified
+    if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
     
-    report = _load_with_feedback(file, tarball, snapshot)
+    report = _load_with_feedback(file, tarball, requirements, snapshot)
     _enforce_policy_constraints(report)
     
     if report.tarball:
@@ -559,13 +606,19 @@ def build(
         None,
         "--file",
         "-f",
-        help="Path to the Conda environment file (required unless --tarball is specified).",
+        help="Path to the Conda environment file (required unless --tarball or --requirements is specified).",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
         help="Path to a pre-packed conda tarball (alternative to --file).",
+    ),
+    requirements: Optional[Path] = typer.Option(
+        None,
+        "--requirements",
+        "-r",
+        help="Path to a pip requirements.txt file (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -628,11 +681,11 @@ def build(
 
     _print_policy_banner()
     
-    # Provide default for file if neither file nor tarball is specified
-    if file is None and tarball is None:
+    # Provide default for file if neither file, tarball, nor requirements is specified
+    if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
     
-    report = _load_with_feedback(file, tarball, snapshot)
+    report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
@@ -691,13 +744,19 @@ def publish(
         None,
         "--file",
         "-f",
-        help="Path to the Conda environment file (required unless --tarball is specified).",
+        help="Path to the Conda environment file (required unless --tarball or --requirements is specified).",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
         help="Path to a pre-packed conda tarball (alternative to --file).",
+    ),
+    requirements: Optional[Path] = typer.Option(
+        None,
+        "--requirements",
+        "-r",
+        help="Path to a pip requirements.txt file (alternative to --file).",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
@@ -764,11 +823,11 @@ def publish(
 
     _print_policy_banner()
     
-    # Provide default for file if neither file nor tarball is specified
-    if file is None and tarball is None:
+    # Provide default for file if neither file, tarball, nor requirements is specified
+    if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
     
-    report = _load_with_feedback(file, tarball, snapshot)
+    report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")

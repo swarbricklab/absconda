@@ -59,7 +59,7 @@ class LoadReport:
     requirements: Optional[RequirementsSpec]
     snapshot: Optional[Snapshot]
     warnings: List[str] = field(default_factory=list)
-    
+
     @property
     def env_name(self) -> str:
         """Get the environment name from env, tarball, or requirements."""
@@ -135,20 +135,20 @@ def _validate_tarball(tarball_path: Path) -> None:
     """Validate that the tarball appears to be a conda-pack tarball."""
     if not tarball_path.exists():
         raise EnvironmentLoadError(f"Tarball '{tarball_path}' was not found.")
-    
+
     if not tarball_path.is_file():
         raise EnvironmentLoadError(f"Tarball path '{tarball_path}' is not a file.")
-    
+
     # Check if it's a valid tar file
     if not tarfile.is_tarfile(tarball_path):
         raise EnvironmentLoadError(f"File '{tarball_path}' is not a valid tar archive.")
-    
+
     # Check for conda-meta directory which indicates a conda environment
     try:
         with tarfile.open(tarball_path, "r:*") as tar:
             members = [m.name for m in tar.getmembers()]
             has_conda_meta = any("conda-meta/" in m for m in members)
-            
+
             if not has_conda_meta:
                 raise EnvironmentLoadError(
                     f"Tarball '{tarball_path}' does not appear to be a conda-pack tarball "
@@ -161,16 +161,16 @@ def _validate_tarball(tarball_path: Path) -> None:
 def _load_tarball(tarball_path: Path, env_name: Optional[str] = None) -> TarballSpec:
     """Load a conda-pack tarball and extract basic metadata."""
     _validate_tarball(tarball_path)
-    
+
     # Use provided name or derive from filename
     if env_name is None:
         env_name = tarball_path.stem
         # Remove .tar from .tar.gz
         if env_name.endswith(".tar"):
             env_name = env_name[:-4]
-    
+
     metadata: dict[str, Any] = {}
-    
+
     # Try to extract environment info from conda-meta if possible
     try:
         with tarfile.open(tarball_path, "r:*") as tar:
@@ -181,7 +181,7 @@ def _load_tarball(tarball_path: Path, env_name: Optional[str] = None) -> Tarball
                     break
     except (tarfile.TarError, OSError):  # pragma: no cover - best effort metadata extraction
         pass
-    
+
     return TarballSpec(name=env_name, path=tarball_path, extracted_metadata=metadata)
 
 
@@ -211,30 +211,30 @@ def load_environment(env_path: Path, snapshot_path: Optional[Path] = None) -> Lo
             "Environment has no dependencies; resulting image will contain only the base image."
         )
 
-    return LoadReport(env=env_spec, tarball=None, requirements=None, snapshot=snapshot, warnings=warnings)
+    return LoadReport(
+        env=env_spec, tarball=None, requirements=None, snapshot=snapshot, warnings=warnings
+    )
 
 
 def load_tarball(
-    tarball_path: Path, 
-    env_path: Optional[Path] = None,
-    snapshot_path: Optional[Path] = None
+    tarball_path: Path, env_path: Optional[Path] = None, snapshot_path: Optional[Path] = None
 ) -> LoadReport:
     """Load a pre-packed conda tarball, with optional YAML for metadata.
-    
+
     Args:
         tarball_path: Path to the conda-pack tarball
         env_path: Optional environment YAML for metadata (name, labels)
         snapshot_path: Optional snapshot for documentation
-        
+
     Returns:
         LoadReport with tarball spec and optional env metadata
     """
-    
+
     warnings: list[str] = []
-    
+
     # Load tarball (required)
     tarball_spec = _load_tarball(tarball_path)
-    
+
     # Optionally load env YAML for metadata
     env_spec: Optional[EnvSpec] = None
     if env_path is not None and env_path.exists():
@@ -245,11 +245,11 @@ def load_tarball(
             tarball_spec = TarballSpec(
                 name=env_spec.name,
                 path=tarball_spec.path,
-                extracted_metadata=tarball_spec.extracted_metadata
+                extracted_metadata=tarball_spec.extracted_metadata,
             )
         except EnvironmentLoadError as exc:
             warnings.append(f"Could not load environment file for metadata: {exc}")
-    
+
     # Optionally load snapshot
     snapshot: Optional[Snapshot] = None
     if snapshot_path is not None:
@@ -260,36 +260,38 @@ def load_tarball(
                 snapshot = _load_snapshot(snapshot_path)
             except EnvironmentLoadError as exc:
                 warnings.append(str(exc))
-    
-    return LoadReport(env=env_spec, tarball=tarball_spec, requirements=None, snapshot=snapshot, warnings=warnings)
+
+    return LoadReport(
+        env=env_spec, tarball=tarball_spec, requirements=None, snapshot=snapshot, warnings=warnings
+    )
 
 
 def _load_requirements(requirements_path: Path, env_name: Optional[str] = None) -> RequirementsSpec:
     """Load a pip requirements.txt file."""
     if not requirements_path.exists():
         raise EnvironmentLoadError(f"Requirements file '{requirements_path}' not found.")
-    
+
     if not requirements_path.is_file():
         raise EnvironmentLoadError(f"Requirements path '{requirements_path}' is not a file.")
-    
+
     try:
         content = requirements_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise EnvironmentLoadError(f"Failed to read '{requirements_path}': {exc}") from exc
-    
+
     # Parse requirements (basic - just non-empty, non-comment lines)
     requirements = []
     for line in content.splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
             requirements.append(stripped)
-    
+
     # Use provided name or derive from filename
     if env_name is None:
         env_name = requirements_path.stem
         if env_name == "requirements":
             env_name = "python-app"
-    
+
     return RequirementsSpec(name=env_name, path=requirements_path, requirements=requirements)
 
 
@@ -299,21 +301,21 @@ def load_requirements(
     snapshot_path: Optional[Path] = None,
 ) -> LoadReport:
     """Load a pip requirements.txt file.
-    
+
     Args:
         requirements_path: Path to the requirements.txt file
         env_name: Optional name for the environment (derived from filename if not provided)
         snapshot_path: Optional snapshot for documentation
-        
+
     Returns:
         LoadReport with requirements spec
     """
-    
+
     warnings: list[str] = []
-    
+
     # Load requirements (required)
     requirements_spec = _load_requirements(requirements_path, env_name)
-    
+
     # Optionally load snapshot
     snapshot: Optional[Snapshot] = None
     if snapshot_path is not None:
@@ -324,16 +326,12 @@ def load_requirements(
                 snapshot = _load_snapshot(snapshot_path)
             except EnvironmentLoadError as exc:
                 warnings.append(str(exc))
-    
+
     if not requirements_spec.requirements:
         warnings.append(
             "Requirements file is empty; resulting image will contain only the base Python image."
         )
-    
+
     return LoadReport(
-        env=None, 
-        tarball=None, 
-        requirements=requirements_spec, 
-        snapshot=snapshot, 
-        warnings=warnings
+        env=None, tarball=None, requirements=requirements_spec, snapshot=snapshot, warnings=warnings
     )

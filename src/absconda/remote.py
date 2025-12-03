@@ -89,9 +89,7 @@ def list_remote_builders(config_path: Optional[Path] = None) -> Tuple[Path, List
 
 def provision_remote_builder(definition: RemoteBuilderDefinition, console: Console) -> None:
     if definition.provision_command is None:
-        raise RemoteConfigError(
-            f"Builder '{definition.name}' does not define a provision_command."
-        )
+        raise RemoteConfigError(f"Builder '{definition.name}' does not define a provision_command.")
     console.print(f"Provisioning remote builder [cyan]{definition.name}[/cyan]...")
     _run_subprocess(definition.provision_command)
 
@@ -156,13 +154,13 @@ def check_remote_status(definition: RemoteBuilderDefinition) -> RemoteStatus:
 
 def _load_builders_section(config_path: Optional[Path]) -> Tuple[Path, dict[str, Any]]:
     """Load builder definitions from config file or XDG config directories.
-    
+
     Search order:
     1. Explicit config_path if provided
     2. Local absconda-remote.yaml file
     3. XDG config directories (system-wide and user)
     """
-    
+
     # If explicit path provided, use only that
     if config_path is not None:
         if not config_path.exists():
@@ -172,7 +170,7 @@ def _load_builders_section(config_path: Optional[Path]) -> Tuple[Path, dict[str,
         if not isinstance(builders, dict) or not builders:
             raise RemoteConfigError(f"No builders defined in '{config_path}'.")
         return config_path, builders
-    
+
     # Try local file first
     path = _discover_remote_config_path(None)
     if path is not None:
@@ -180,7 +178,7 @@ def _load_builders_section(config_path: Optional[Path]) -> Tuple[Path, dict[str,
         builders = data.get("builders")
         if isinstance(builders, dict) and builders:
             return path, builders
-    
+
     # Fall back to XDG config
     xdg_config = cfg.load_config()
     if xdg_config.remote_builders:
@@ -188,7 +186,7 @@ def _load_builders_section(config_path: Optional[Path]) -> Tuple[Path, dict[str,
         config_dirs = cfg.get_config_dirs()
         display_path = config_dirs[-1] / "config.yaml" if config_dirs else Path("XDG config")
         return display_path, xdg_config.remote_builders
-    
+
     raise RemoteConfigError(
         "Remote builder config not found. Options:\n"
         "  1. Create 'absconda-remote.yaml' in current directory\n"
@@ -215,9 +213,7 @@ def build_remote_image(
     if not context_path.exists():
         raise RemoteError(f"Context directory '{context_path}' does not exist.")
 
-    console.print(
-        f"Using remote builder [cyan]{definition.name}[/cyan] at {definition.ssh_target}"
-    )
+    console.print(f"Using remote builder [cyan]{definition.name}[/cyan] at {definition.ssh_target}")
 
     with _RemoteLock(definition.lock_file, wait_seconds, console):
         if definition.start_command:
@@ -231,9 +227,7 @@ def build_remote_image(
 
         if shutdown_after:
             if definition.stop_command:
-                console.print(
-                    f"Stopping builder '{definition.name}' (requested by --remote-off)."
-                )
+                console.print(f"Stopping builder '{definition.name}' (requested by --remote-off).")
                 _run_subprocess(definition.stop_command)
             else:
                 console.print(
@@ -281,7 +275,7 @@ def _discover_remote_config_path(explicit: Optional[Path]) -> Optional[Path]:
 
 def _expand_env_vars(obj: Any) -> Any:
     """Recursively expand environment variables in strings, lists, and dicts.
-    
+
     Supports ${VAR} and ${VAR?} syntax (latter raises error if undefined).
     """
     if isinstance(obj, str):
@@ -291,12 +285,10 @@ def _expand_env_vars(obj: Any) -> Any:
             required = match.group(2) == "?"
             value = os.environ.get(var_name)
             if value is None and required:
-                raise RemoteConfigError(
-                    f"Required environment variable '{var_name}' is not set"
-                )
+                raise RemoteConfigError(f"Required environment variable '{var_name}' is not set")
             return value if value is not None else match.group(0)
-        
-        return re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(\?)?}', replacer, obj)
+
+        return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(\?)?}", replacer, obj)
     elif isinstance(obj, list):
         return [_expand_env_vars(item) for item in obj]
     elif isinstance(obj, dict):
@@ -519,7 +511,9 @@ class _RemoteSession:
             self._cleanup_remote()
             # Auto-stop the builder after build completes
             if self.definition.stop_command:
-                self.console.print(f"Stopping remote builder [cyan]{self.definition.name}[/cyan]...")
+                self.console.print(
+                    f"Stopping remote builder [cyan]{self.definition.name}[/cyan]..."
+                )
                 try:
                     _run_subprocess(self.definition.stop_command)
                 except (subprocess.CalledProcessError, OSError) as e:
@@ -567,11 +561,11 @@ class _RemoteSession:
             # Build the image with BuildKit
             f"DOCKER_BUILDKIT=1 docker build -t {shlex.quote(image_ref)} .",
         ]
-        
+
         # Push if requested (credentials should already be configured via startup script)
         if push:
             commands.append(f"sudo docker push {shlex.quote(image_ref)}")
-        
+
         cmd = _remote_shell_command(self.definition, " && ".join(commands))
         _run_subprocess(cmd)
 
@@ -597,26 +591,31 @@ class _RemoteSession:
 # ---------------------------------------------------------------------------
 
 
-def _remote_shell_command(defn: RemoteBuilderDefinition, payload: str, env_vars: Optional[Dict[str, str]] = None) -> List[str]:
+def _remote_shell_command(
+    defn: RemoteBuilderDefinition, payload: str, env_vars: Optional[Dict[str, str]] = None
+) -> List[str]:
     # Prepend environment variable exports to the payload if provided
     if env_vars:
         exports = " ".join([f"export {k}={shlex.quote(v)}" for k, v in env_vars.items()])
         payload = f"{exports} && {payload}"
-    
+
     # For GCP builders, use gcloud compute ssh instead of manual SSH with IAP ProxyCommand
     # This avoids IAP tunnel connection issues
     metadata = defn.metadata
     if "project" in metadata and "zone" in metadata:
         # GCP builder - use gcloud compute ssh
-        host = defn.ssh_target.split('@')[1] if '@' in defn.ssh_target else defn.ssh_target
+        host = defn.ssh_target.split("@")[1] if "@" in defn.ssh_target else defn.ssh_target
         return [
-            "gcloud", "compute", "ssh", host,
+            "gcloud",
+            "compute",
+            "ssh",
+            host,
             f"--zone={metadata['zone']}",
             f"--project={metadata['project']}",
             "--tunnel-through-iap",
-            f"--command=bash -lc {shlex.quote(payload)}"
+            f"--command=bash -lc {shlex.quote(payload)}",
         ]
-    
+
     # Standard SSH for non-GCP builders
     command = ["ssh", *defn.ssh_options]
     if defn.ssh_key:
@@ -627,21 +626,22 @@ def _remote_shell_command(defn: RemoteBuilderDefinition, payload: str, env_vars:
     return command
 
 
-def _remote_scp_upload(
-    defn: RemoteBuilderDefinition, source: Path, remote_path: str
-) -> List[str]:
+def _remote_scp_upload(defn: RemoteBuilderDefinition, source: Path, remote_path: str) -> List[str]:
     # For GCP builders, use gcloud compute scp instead of manual scp with IAP
     metadata = defn.metadata
     if "project" in metadata and "zone" in metadata:
-        host = defn.ssh_target.split('@')[1] if '@' in defn.ssh_target else defn.ssh_target
+        host = defn.ssh_target.split("@")[1] if "@" in defn.ssh_target else defn.ssh_target
         return [
-            "gcloud", "compute", "scp", str(source),
+            "gcloud",
+            "compute",
+            "scp",
+            str(source),
             f"{host}:{remote_path}",
             f"--zone={metadata['zone']}",
             f"--project={metadata['project']}",
-            "--tunnel-through-iap"
+            "--tunnel-through-iap",
         ]
-    
+
     # Standard SCP for non-GCP builders
     command = ["scp", *defn.ssh_options]
     if defn.ssh_key:
@@ -668,9 +668,7 @@ def _run_subprocess(command: List[str], *, cwd: Optional[Path] = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _create_context_tarball(
-    context_dir: Path, dockerfile: str, manifest: Dict[str, Any]
-) -> Path:
+def _create_context_tarball(context_dir: Path, dockerfile: str, manifest: Dict[str, Any]) -> Path:
     context_dir = context_dir.resolve()
     if not context_dir.exists():
         raise RemoteError(f"Context directory '{context_dir}' does not exist.")

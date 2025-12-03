@@ -76,9 +76,9 @@ def test_render_dockerfile_custom_template(tmp_path: Path) -> None:
 def test_render_dockerfile_with_renv_lock() -> None:
     env = make_env()
     profile = make_profile()
-    renv_lock = (
-        Path(__file__).parent / "fixtures" / "sample-renv.lock"
-    ).read_text(encoding="utf-8")
+    renv_lock = (Path(__file__).parent / "fixtures" / "sample-renv.lock").read_text(
+        encoding="utf-8"
+    )
 
     config = RenderConfig(
         env=env,

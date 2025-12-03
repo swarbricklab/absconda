@@ -54,7 +54,7 @@ def render_dockerfile(config: RenderConfig) -> str:
         env_name = config.env.name
     else:
         env_name = "absconda"
-    
+
     env_prefix = config.profile.env_prefix or "/opt/conda/envs"
     env_dir = _join_path(env_prefix, env_name)
     export_block = _build_export_block(env_dir, env_name)
@@ -66,7 +66,7 @@ def render_dockerfile(config: RenderConfig) -> str:
         env_yaml = _env_yaml(config.env)
     else:
         env_yaml = ""
-    
+
     context = _build_context(
         config,
         env_prefix=env_prefix,

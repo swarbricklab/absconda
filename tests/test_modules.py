@@ -2,11 +2,12 @@
 
 import tempfile
 from pathlib import Path
+
 from absconda.modules import (
     ModuleConfig,
-    generate_module,
-    _parse_module_name,
     _module_base_name,
+    _parse_module_name,
+    generate_module,
 )
 
 
@@ -16,12 +17,12 @@ def test_parse_module_name():
     base, version = _parse_module_name("myenv/1.0.0")
     assert base == "myenv"
     assert version == "1.0.0"
-    
+
     # Without version - returns empty string, not None
     base, version = _parse_module_name("myenv")
     assert base == "myenv"
     assert version == ""
-    
+
     # Complex version
     base, version = _parse_module_name("python/3.11.2-gcc-11.2")
     assert base == "python"
@@ -40,7 +41,7 @@ def test_generate_basic_module():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="testenv/1.0",
             wrapper_dir=wrapper_dir,
@@ -50,13 +51,13 @@ def test_generate_basic_module():
             runtime="singularity",
             commands=["python", "pip"],
         )
-        
+
         module_file = generate_module(config)
-        
+
         # Check file was created
         assert module_file.exists()
         assert module_file == Path(tmpdir) / "testenv" / "1.0"
-        
+
         # Check content
         content = module_file.read_text()
         assert "#%Module1.0" in content
@@ -78,7 +79,7 @@ def test_generate_module_without_version():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="standalone",
             wrapper_dir=wrapper_dir,
@@ -88,13 +89,13 @@ def test_generate_module_without_version():
             runtime="docker",
             commands=["bash"],
         )
-        
+
         module_file = generate_module(config)
-        
+
         # Module file should be at output_dir/standalone (no version subdir)
         assert module_file == Path(tmpdir) / "standalone"
         assert module_file.exists()
-        
+
         content = module_file.read_text()
         assert "Standalone environment" in content
         assert "docker" in content
@@ -108,7 +109,7 @@ def test_generate_module_docker_runtime():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="dockerenv/2.0",
             wrapper_dir=wrapper_dir,
@@ -118,10 +119,10 @@ def test_generate_module_docker_runtime():
             runtime="docker",
             commands=["python"],
         )
-        
+
         module_file = generate_module(config)
         content = module_file.read_text()
-        
+
         assert "Runtime: docker" in content
         assert "setenv DOCKERENV_RUNTIME docker" in content
 
@@ -131,7 +132,7 @@ def test_module_help_function():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="helptest/1.0",
             wrapper_dir=wrapper_dir,
@@ -141,10 +142,10 @@ def test_module_help_function():
             runtime="singularity",
             commands=["cmd1", "cmd2", "cmd3"],
         )
-        
+
         module_file = generate_module(config)
         content = module_file.read_text()
-        
+
         assert "proc ModulesHelp { }" in content
         assert "Testing help output" in content
         assert "Containerized environment: test:latest" in content
@@ -156,7 +157,7 @@ def test_module_conflict_directive():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="myapp/1.0",
             wrapper_dir=wrapper_dir,
@@ -166,10 +167,10 @@ def test_module_conflict_directive():
             runtime="singularity",
             commands=["myapp"],
         )
-        
+
         module_file = generate_module(config)
         content = module_file.read_text()
-        
+
         # Should conflict with any version of myapp
         assert "conflict myapp" in content
 
@@ -179,7 +180,7 @@ def test_module_creates_parent_directory():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="deep/nested/module/1.0",
             wrapper_dir=wrapper_dir,
@@ -189,9 +190,9 @@ def test_module_creates_parent_directory():
             runtime="singularity",
             commands=["test"],
         )
-        
+
         module_file = generate_module(config)
-        
+
         # Should create all parent directories
         assert module_file.parent.exists()
         assert module_file.exists()
@@ -203,7 +204,7 @@ def test_module_with_special_characters():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         # Module names with hyphens and underscores are common
         config = ModuleConfig(
             name="my-app_test/1.0.0-beta",
@@ -214,9 +215,9 @@ def test_module_with_special_characters():
             runtime="singularity",
             commands=["test"],
         )
-        
+
         module_file = generate_module(config)
-        
+
         assert module_file.exists()
         # Env var names should be sanitized (uppercase, replace - with _)
         content = module_file.read_text()
@@ -230,9 +231,9 @@ def test_module_with_many_commands():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         commands = [f"cmd{i}" for i in range(20)]
-        
+
         config = ModuleConfig(
             name="bigenv/1.0",
             wrapper_dir=wrapper_dir,
@@ -242,10 +243,10 @@ def test_module_with_many_commands():
             runtime="singularity",
             commands=commands,
         )
-        
+
         module_file = generate_module(config)
         content = module_file.read_text()
-        
+
         # All commands should be listed in help
         command_list = ", ".join(commands)
         assert command_list in content
@@ -256,7 +257,7 @@ def test_module_whatis_directive():
     with tempfile.TemporaryDirectory() as tmpdir:
         wrapper_dir = Path(tmpdir) / "wrappers"
         wrapper_dir.mkdir()
-        
+
         config = ModuleConfig(
             name="test/1.0",
             wrapper_dir=wrapper_dir,
@@ -266,8 +267,8 @@ def test_module_whatis_directive():
             runtime="singularity",
             commands=["test"],
         )
-        
+
         module_file = generate_module(config)
         content = module_file.read_text()
-        
+
         assert 'module-whatis "Short description"' in content

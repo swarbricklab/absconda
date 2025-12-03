@@ -35,9 +35,7 @@ def test_load_remote_definition(tmp_path: Path) -> None:
     config_path = tmp_path / "absconda-remote.yaml"
     _write_remote_config(config_path)
 
-    definition = remote.load_remote_definition(
-        "default-remote", config_path=config_path
-    )
+    definition = remote.load_remote_definition("default-remote", config_path=config_path)
 
     assert definition.name == "default-remote"
     assert definition.ssh_target == "absconda@builder.example.com"

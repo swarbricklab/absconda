@@ -38,4 +38,4 @@ def test_data_science_example_single_stage(tmp_path):
     assert result.exit_code == 0
     assert result.stdout.count("FROM") == 1
     assert "numpy=1.26" in result.stdout
-    assert "CMD [\"python\"]" in result.stdout
+    assert 'CMD ["python"]' in result.stdout

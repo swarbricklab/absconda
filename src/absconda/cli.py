@@ -101,26 +101,28 @@ def main(
 
 
 def _load_with_feedback(
-    file: Optional[Path], 
+    file: Optional[Path],
     tarball: Optional[Path],
     requirements: Optional[Path],
-    snapshot: Optional[Path]
+    snapshot: Optional[Path],
 ) -> LoadReport:
     """Helper that loads env files, tarballs, or requirements and renders Typer-friendly errors."""
-    
+
     # Count how many input types were provided
-    inputs_provided = sum([
-        file is not None,
-        tarball is not None,
-        requirements is not None,
-    ])
-    
+    inputs_provided = sum(
+        [
+            file is not None,
+            tarball is not None,
+            requirements is not None,
+        ]
+    )
+
     if inputs_provided > 1:
         console.print(
             "[bold yellow]warning[/bold yellow]: Multiple input types provided. "
             "Only one of --file, --tarball, or --requirements should be specified."
         )
-    
+
     if inputs_provided == 0:
         console.print(
             "[red]Error:[/red] One of --file, --tarball, or --requirements must be provided."
@@ -168,11 +170,11 @@ def _print_warning_messages(messages: Iterable[str]) -> None:
 def _enforce_policy_constraints(report: LoadReport) -> None:
     profile = _active_policy().profile
     allowed = profile.allowed_channels
-    
+
     # Skip channel validation for tarball-only mode (no env YAML)
     if report.env is None:
         return
-    
+
     if allowed:
         disallowed = [channel for channel in report.env.channels if channel not in allowed]
         if disallowed:
@@ -207,20 +209,22 @@ def _resolve_repository(repository: Optional[str], env_name: str) -> str:
     """Resolve repository using config defaults if not explicitly provided."""
     if repository is not None:
         return repository
-    
+
     # Load config to get registry and organization
     from . import config as cfg
+
     absconda_config = cfg.load_config()
-    
+
     if absconda_config.organization is None:
         console.print(
             "[red]Error:[/red] No repository specified and no default organization configured.\n"
             "Either:\n"
             "  1. Use --repository flag\n"
-            "  2. Set 'organization' in ~/.config/absconda/config.yaml or /etc/xdg/absconda/config.yaml"
+            "  2. Set 'organization' in ~/.config/absconda/config.yaml "
+            "or /etc/xdg/absconda/config.yaml"
         )
         raise typer.Exit(code=1)
-    
+
     slug = _slugify(env_name)
     return f"{absconda_config.registry}/{absconda_config.organization}/{slug}"
 
@@ -295,16 +299,18 @@ def _build_image_local(
     with tempfile.TemporaryDirectory(prefix="absconda-build-") as temp_dir:
         dockerfile_path = Path(temp_dir) / "Dockerfile"
         dockerfile_path.write_text(dockerfile, encoding="utf-8")
-        
+
         # If using tarball, copy it into the build context
         if report.tarball:
             import shutil
+
             tarball_dest = Path(temp_dir) / "conda-env.tar.gz"
             shutil.copy2(report.tarball.path, tarball_dest)
-        
+
         # If using requirements, copy it into the build context
         if report.requirements:
             import shutil
+
             requirements_dest = Path(temp_dir) / "requirements.txt"
             shutil.copy2(report.requirements.path, requirements_dest)
 
@@ -462,7 +468,10 @@ def generate(
         None,
         "--file",
         "-f",
-        help="Path to the Conda environment file (required unless --tarball or --requirements is specified).",
+        help=(
+            "Path to the Conda environment file "
+            "(required unless --tarball or --requirements is specified)."
+        ),
     ),
     tarball: Optional[Path] = typer.Option(
         None,
@@ -516,11 +525,11 @@ def generate(
     """Generate a Dockerfile from the provided environment file, tarball, or requirements."""
 
     _print_policy_banner()
-    
+
     # Provide default for file if no input is specified
     if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
-    
+
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
@@ -547,7 +556,10 @@ def validate(
         None,
         "--file",
         "-f",
-        help="Environment file to validate (required unless --tarball or --requirements is specified).",
+        help=(
+            "Environment file to validate "
+            "(required unless --tarball or --requirements is specified)."
+        ),
     ),
     tarball: Optional[Path] = typer.Option(
         None,
@@ -570,18 +582,16 @@ def validate(
     """Validate the environment and snapshot files without generating output."""
 
     _print_policy_banner()
-    
+
     # Provide default for file if no input is specified
     if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
-    
+
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _enforce_policy_constraints(report)
-    
+
     if report.tarball:
-        console.print(
-            f"Tarball [green]{report.env_name}[/green] is valid."
-        )
+        console.print(f"Tarball [green]{report.env_name}[/green] is valid.")
     else:
         console.print(
             f"Environment [green]{report.env_name}[/green] is valid with "
@@ -606,7 +616,10 @@ def build(
         None,
         "--file",
         "-f",
-        help="Path to the Conda environment file (required unless --tarball or --requirements is specified).",
+        help=(
+            "Path to the Conda environment file "
+            "(required unless --tarball or --requirements is specified)."
+        ),
     ),
     tarball: Optional[Path] = typer.Option(
         None,
@@ -680,19 +693,19 @@ def build(
     """Render a Dockerfile and build the container image."""
 
     _print_policy_banner()
-    
+
     # Provide default for file if neither file, tarball, nor requirements is specified
     if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
-    
+
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-    
+
     # Resolve repository with defaults from config
     resolved_repository = _resolve_repository(repository, report.env_name)
-    
+
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
     if remote_opts:
@@ -744,7 +757,10 @@ def publish(
         None,
         "--file",
         "-f",
-        help="Path to the Conda environment file (required unless --tarball or --requirements is specified).",
+        help=(
+            "Path to the Conda environment file "
+            "(required unless --tarball or --requirements is specified)."
+        ),
     ),
     tarball: Optional[Path] = typer.Option(
         None,
@@ -822,19 +838,19 @@ def publish(
     """Build an image, push it, and optionally emit a Singularity artifact."""
 
     _print_policy_banner()
-    
+
     # Provide default for file if neither file, tarball, nor requirements is specified
     if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
-    
+
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-    
+
     # Resolve repository with defaults from config
     resolved_repository = _resolve_repository(repository, report.env_name)
-    
+
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
     if remote_opts:
@@ -972,15 +988,23 @@ def remote_status(
         console.print(f"  ssh: {status.ssh_error}")
         # Provide helpful hint for GCP OS Login authentication issues
         if "Permission denied (publickey)" in status.ssh_error and "gcp" in status.name.lower():
-            host = definition.ssh_target.split('@')[1] if '@' in definition.ssh_target else definition.ssh_target
-            console.print("\n[yellow]💡 Tip:[/yellow] For GCP VMs with OS Login, you may need to authenticate first:")
-            console.print(f"   gcloud compute ssh {host} --zone=$GCP_ZONE --tunnel-through-iap --project=$GCP_PROJECT")
+            host = (
+                definition.ssh_target.split("@")[1]
+                if "@" in definition.ssh_target
+                else definition.ssh_target
+            )
+            console.print(
+                "\n[yellow]💡 Tip:[/yellow] For GCP VMs with OS Login, "
+                "you may need to authenticate first:"
+            )
+            console.print(
+                f"   gcloud compute ssh {host} --zone=$GCP_ZONE "
+                f"--tunnel-through-iap --project=$GCP_PROJECT"
+            )
 
     if status.busy:
         owner = status.lock_owner or "unknown"
-        console.print(
-            f"[yellow]Busy[/yellow]: lock file at {status.lock_path} held by {owner}."
-        )
+        console.print(f"[yellow]Busy[/yellow]: lock file at {status.lock_path} held by {owner}.")
     else:
         console.print("Lock: free")
 
@@ -1001,7 +1025,7 @@ def remote_init(
 ) -> None:
     """Initialize SSH access to a remote builder (GCP OS Login setup)."""
     definition = _load_remote_definition_or_exit(builder, config)
-    
+
     # Check if this looks like a GCP builder
     metadata = definition.metadata
     if "gcp" not in builder.lower() and "project" not in metadata:
@@ -1011,40 +1035,63 @@ def remote_init(
         )
         if not typer.confirm("Continue anyway?"):
             raise typer.Exit(0)
-    
+
     # Extract host and build gcloud command
-    host = definition.ssh_target.split('@')[1] if '@' in definition.ssh_target else definition.ssh_target
+    host = (
+        definition.ssh_target.split("@")[1]
+        if "@" in definition.ssh_target
+        else definition.ssh_target
+    )
     zone = metadata.get("zone", "${GCP_ZONE}")
     project = metadata.get("project", "${GCP_PROJECT}")
-    
+
     console.print(f"Initializing SSH access to [cyan]{builder}[/cyan]...")
-    console.print(f"This will run: gcloud compute ssh {host} --zone={zone} --tunnel-through-iap --project={project}\n")
-    
+    console.print(
+        f"This will run: gcloud compute ssh {host} --zone={zone} "
+        f"--tunnel-through-iap --project={project}\n"
+    )
+
     cmd = [
-        "gcloud", "compute", "ssh", host,
+        "gcloud",
+        "compute",
+        "ssh",
+        host,
         f"--zone={zone}",
         "--tunnel-through-iap",
         f"--project={project}",
-        "--command=echo 'SSH access configured successfully!'"
+        "--command=echo 'SSH access configured successfully!'",
     ]
-    
+
     try:
         subprocess.run(cmd, check=True)
         console.print("\n[green]✓[/green] SSH access initialized successfully!")
-        
+
         # Try to get OS Login username
         try:
             result = subprocess.run(
-                ["gcloud", "compute", "os-login", "describe-profile", "--format=value(posixAccounts[0].username)"],
-                capture_output=True, text=True, check=True
+                [
+                    "gcloud",
+                    "compute",
+                    "os-login",
+                    "describe-profile",
+                    "--format=value(posixAccounts[0].username)",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
             )
             os_login_user = result.stdout.strip()
             if os_login_user:
-                console.print(f"\n[yellow]💡 Note:[/yellow] Your OS Login username is: [cyan]{os_login_user}[/cyan]")
-                console.print("Update the 'user' field in your config if it differs from the current setting.")
+                console.print(
+                    f"\n[yellow]💡 Note:[/yellow] Your OS Login username is: "
+                    f"[cyan]{os_login_user}[/cyan]"
+                )
+                console.print(
+                    "Update the 'user' field in your config if it differs from the current setting."
+                )
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass  # Ignore if we can't determine OS Login username
-        
+
         console.print(f"\nYou can now use: absconda remote status {builder}")
     except subprocess.CalledProcessError as exc:
         console.print(f"\n[red]✗[/red] Initialization failed with exit code {exc.returncode}")
@@ -1074,17 +1121,26 @@ def wrap(
     output_dir: Optional[Path] = typer.Option(
         None,
         "--output-dir",
-        help="Directory for wrapper scripts (defaults to config or ~/.local/absconda/wrappers/<image-name>).",
+        help=(
+            "Directory for wrapper scripts "
+            "(defaults to config or ~/.local/absconda/wrappers/<image-name>)."
+        ),
     ),
     image_cache: Optional[Path] = typer.Option(
         None,
         "--image-cache",
-        help="SIF cache directory for Singularity (defaults to config or ~/.local/absconda/sif-cache).",
+        help=(
+            "SIF cache directory for Singularity "
+            "(defaults to config or ~/.local/absconda/sif-cache)."
+        ),
     ),
     extra_mounts: Optional[str] = typer.Option(
         None,
         "--extra-mounts",
-        help="Additional volume mounts (comma-separated paths, e.g., /scratch/$PROJECT,/g/data/$PROJECT).",
+        help=(
+            "Additional volume mounts "
+            "(comma-separated paths, e.g., /scratch/$PROJECT,/g/data/$PROJECT)."
+        ),
     ),
     env: Optional[str] = typer.Option(
         None,
@@ -1098,23 +1154,23 @@ def wrap(
     ),
 ) -> None:
     """Generate wrapper scripts for running commands inside containers.
-    
+
     Creates executable shell scripts that transparently run specified commands
     inside a container runtime, making containerized environments feel like
     native executables on HPC systems.
     """
     from .config import load_config
     from .wrappers import WrapperConfig, WrapperError, generate_wrappers
-    
+
     # Load configuration
     config = load_config()
-    
+
     # Parse command list
     command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
     if not command_list:
         console.print("[red]Error:[/red] No commands specified")
         raise typer.Exit(1)
-    
+
     # Determine output directory
     if output_dir is None:
         if config.wrapper_default_output_dir:
@@ -1122,34 +1178,35 @@ def wrap(
         else:
             # Default to ~/.local/absconda/wrappers/<sanitized-image-name>
             from .wrappers import _sanitize_image_name
+
             safe_name = _sanitize_image_name(image)
             output_dir = Path.home() / ".local" / "absconda" / "wrappers" / safe_name
-    
+
     # Determine image cache
     if image_cache is None and runtime == "singularity":
         if config.wrapper_image_cache:
             image_cache = config.wrapper_image_cache
         else:
             image_cache = Path.home() / ".local" / "absconda" / "sif-cache"
-    
+
     # Parse mounts
     mount_list = []
     if extra_mounts:
         mount_list = [m.strip() for m in extra_mounts.split(",") if m.strip()]
-    
+
     # Add default mounts from config
     if config.wrapper_default_mounts:
         mount_list = config.wrapper_default_mounts + mount_list
-    
+
     # Parse environment variables
     env_list = []
     if env:
         env_list = [e.strip() for e in env.split(",") if e.strip()]
-    
+
     # Add default env passthrough from config
     if config.wrapper_env_passthrough:
         env_list = config.wrapper_env_passthrough + env_list
-    
+
     # Create wrapper config
     wrapper_config = WrapperConfig(
         image_ref=image,
@@ -1161,25 +1218,29 @@ def wrap(
         env_passthrough=env_list,
         gpu=gpu,
     )
-    
+
     # Generate wrappers
     try:
         wrapper_paths = generate_wrappers(wrapper_config)
-        
-        console.print(f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper script(s) in {output_dir}")
+
+        console.print(
+            f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper script(s) in {output_dir}"
+        )
         console.print(f"\n[bold]Runtime:[/bold] {runtime}")
         console.print(f"[bold]Image:[/bold] {image}")
         if gpu:
             console.print("[bold]GPU:[/bold] enabled")
-        
+
         console.print("\n[bold]Wrapped commands:[/bold]")
         for cmd, path in wrapper_paths.items():
             console.print(f"  • {cmd} → {path}")
-        
+
         console.print("\n[bold cyan]Next steps:[/bold cyan]")
         console.print(f"  1. Add {output_dir} to your PATH, or")
-        console.print(f"  2. Generate a module file with: absconda module --wrapper-dir {output_dir}")
-        
+        console.print(
+            f"  2. Generate a module file with: absconda module --wrapper-dir {output_dir}"
+        )
+
     except WrapperError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -1224,28 +1285,28 @@ def module(
     ),
 ) -> None:
     """Generate an environment module file for wrapper scripts.
-    
+
     Creates a Tcl module file that adds wrapper directories to PATH and sets
     environment variables. Compatible with HPC module systems.
     """
     from .config import load_config
     from .modules import ModuleConfig, ModuleError, generate_module
-    
+
     # Load configuration
     config = load_config()
-    
+
     # Determine output directory
     if output_dir is None:
         if config.module_default_output_dir:
             output_dir = config.module_default_output_dir
         else:
             output_dir = Path.home() / ".local" / "absconda" / "modulefiles"
-    
+
     # Parse commands list if provided
     commands_list = None
     if commands_str:
         commands_list = [cmd.strip() for cmd in commands_str.split(",") if cmd.strip()]
-    
+
     # Create module config
     module_config = ModuleConfig(
         name=name,
@@ -1256,22 +1317,22 @@ def module(
         runtime=runtime,
         commands=commands_list,
     )
-    
+
     # Generate module
     try:
         module_file = generate_module(module_config)
-        
+
         console.print(f"[green]✓[/green] Generated module file: {module_file}")
         console.print(f"\n[bold]Module name:[/bold] {name}")
         console.print(f"[bold]Wrapper directory:[/bold] {wrapper_dir}")
         console.print(f"[bold]Runtime:[/bold] {runtime}")
         console.print(f"[bold]Image:[/bold] {image}")
-        
+
         console.print("\n[bold cyan]Usage:[/bold cyan]")
         console.print(f"  module use {output_dir}")
         console.print(f"  module load {name}")
         console.print(f"  module help {name}")
-        
+
     except ModuleError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc

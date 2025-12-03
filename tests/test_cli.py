@@ -63,6 +63,7 @@ def test_version_option(tmp_path: Path) -> None:
     result = runner.invoke(app, ["--version"], env={"HOME": str(tmp_path)})
     assert result.exit_code == 0
 
+
 def test_build_uses_remote_builder_when_requested(monkeypatch, tmp_path: Path) -> None:
     env_path = write_env(tmp_path)
     builder_definition = remote.RemoteBuilderDefinition(

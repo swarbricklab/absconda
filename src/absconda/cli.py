@@ -1054,5 +1054,228 @@ def remote_init(
         raise typer.Exit(1) from exc
 
 
+@app.command()
+def wrap(
+    image: str = typer.Option(
+        ...,
+        "--image",
+        help="Container image reference (e.g., ghcr.io/org/env:tag).",
+    ),
+    commands: str = typer.Option(
+        ...,
+        "--commands",
+        help="Comma-separated list of commands to wrap (e.g., python,pip,jupyter).",
+    ),
+    runtime: str = typer.Option(
+        "singularity",
+        "--runtime",
+        help="Container runtime: 'singularity' or 'docker'.",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory for wrapper scripts (defaults to config or ~/.local/absconda/wrappers/<image-name>).",
+    ),
+    image_cache: Optional[Path] = typer.Option(
+        None,
+        "--image-cache",
+        help="SIF cache directory for Singularity (defaults to config or ~/.local/absconda/sif-cache).",
+    ),
+    extra_mounts: Optional[str] = typer.Option(
+        None,
+        "--extra-mounts",
+        help="Additional volume mounts (comma-separated paths, e.g., /scratch/$PROJECT,/g/data/$PROJECT).",
+    ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        help="Additional environment variables to pass through (comma-separated).",
+    ),
+    gpu: bool = typer.Option(
+        False,
+        "--gpu",
+        help="Enable GPU support (--nv for Singularity, --gpus all for Docker).",
+    ),
+) -> None:
+    """Generate wrapper scripts for running commands inside containers.
+    
+    Creates executable shell scripts that transparently run specified commands
+    inside a container runtime, making containerized environments feel like
+    native executables on HPC systems.
+    """
+    from .config import load_config
+    from .wrappers import WrapperConfig, WrapperError, generate_wrappers
+    
+    # Load configuration
+    config = load_config()
+    
+    # Parse command list
+    command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
+    if not command_list:
+        console.print("[red]Error:[/red] No commands specified")
+        raise typer.Exit(1)
+    
+    # Determine output directory
+    if output_dir is None:
+        if config.wrapper_default_output_dir:
+            output_dir = config.wrapper_default_output_dir
+        else:
+            # Default to ~/.local/absconda/wrappers/<sanitized-image-name>
+            from .wrappers import _sanitize_image_name
+            safe_name = _sanitize_image_name(image)
+            output_dir = Path.home() / ".local" / "absconda" / "wrappers" / safe_name
+    
+    # Determine image cache
+    if image_cache is None and runtime == "singularity":
+        if config.wrapper_image_cache:
+            image_cache = config.wrapper_image_cache
+        else:
+            image_cache = Path.home() / ".local" / "absconda" / "sif-cache"
+    
+    # Parse mounts
+    mount_list = []
+    if extra_mounts:
+        mount_list = [m.strip() for m in extra_mounts.split(",") if m.strip()]
+    
+    # Add default mounts from config
+    if config.wrapper_default_mounts:
+        mount_list = config.wrapper_default_mounts + mount_list
+    
+    # Parse environment variables
+    env_list = []
+    if env:
+        env_list = [e.strip() for e in env.split(",") if e.strip()]
+    
+    # Add default env passthrough from config
+    if config.wrapper_env_passthrough:
+        env_list = config.wrapper_env_passthrough + env_list
+    
+    # Create wrapper config
+    wrapper_config = WrapperConfig(
+        image_ref=image,
+        commands=command_list,
+        runtime=runtime,
+        output_dir=output_dir,
+        image_cache=image_cache,
+        extra_mounts=mount_list,
+        env_passthrough=env_list,
+        gpu=gpu,
+    )
+    
+    # Generate wrappers
+    try:
+        wrapper_paths = generate_wrappers(wrapper_config)
+        
+        console.print(f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper script(s) in {output_dir}")
+        console.print(f"\n[bold]Runtime:[/bold] {runtime}")
+        console.print(f"[bold]Image:[/bold] {image}")
+        if gpu:
+            console.print("[bold]GPU:[/bold] enabled")
+        
+        console.print("\n[bold]Wrapped commands:[/bold]")
+        for cmd, path in wrapper_paths.items():
+            console.print(f"  • {cmd} → {path}")
+        
+        console.print("\n[bold cyan]Next steps:[/bold cyan]")
+        console.print(f"  1. Add {output_dir} to your PATH, or")
+        console.print(f"  2. Generate a module file with: absconda module --wrapper-dir {output_dir}")
+        
+    except WrapperError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def module(
+    name: str = typer.Option(
+        ...,
+        "--name",
+        help="Module name with version (e.g., myenv/1.0).",
+    ),
+    wrapper_dir: Path = typer.Option(
+        ...,
+        "--wrapper-dir",
+        help="Directory containing wrapper scripts.",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory for module file (defaults to config or ~/.local/absconda/modulefiles).",
+    ),
+    description: str = typer.Option(
+        ...,
+        "--description",
+        help="Module description for help text.",
+    ),
+    image: str = typer.Option(
+        ...,
+        "--image",
+        help="Container image reference (for metadata).",
+    ),
+    runtime: str = typer.Option(
+        "singularity",
+        "--runtime",
+        help="Container runtime: 'singularity' or 'docker'.",
+    ),
+    commands_str: Optional[str] = typer.Option(
+        None,
+        "--commands",
+        help="Comma-separated list of wrapped commands (for help text).",
+    ),
+) -> None:
+    """Generate an environment module file for wrapper scripts.
+    
+    Creates a Tcl module file that adds wrapper directories to PATH and sets
+    environment variables. Compatible with HPC module systems.
+    """
+    from .config import load_config
+    from .modules import ModuleConfig, ModuleError, generate_module
+    
+    # Load configuration
+    config = load_config()
+    
+    # Determine output directory
+    if output_dir is None:
+        if config.module_default_output_dir:
+            output_dir = config.module_default_output_dir
+        else:
+            output_dir = Path.home() / ".local" / "absconda" / "modulefiles"
+    
+    # Parse commands list if provided
+    commands_list = None
+    if commands_str:
+        commands_list = [cmd.strip() for cmd in commands_str.split(",") if cmd.strip()]
+    
+    # Create module config
+    module_config = ModuleConfig(
+        name=name,
+        wrapper_dir=wrapper_dir,
+        output_dir=output_dir,
+        description=description,
+        image_ref=image,
+        runtime=runtime,
+        commands=commands_list,
+    )
+    
+    # Generate module
+    try:
+        module_file = generate_module(module_config)
+        
+        console.print(f"[green]✓[/green] Generated module file: {module_file}")
+        console.print(f"\n[bold]Module name:[/bold] {name}")
+        console.print(f"[bold]Wrapper directory:[/bold] {wrapper_dir}")
+        console.print(f"[bold]Runtime:[/bold] {runtime}")
+        console.print(f"[bold]Image:[/bold] {image}")
+        
+        console.print("\n[bold cyan]Usage:[/bold cyan]")
+        console.print(f"  module use {output_dir}")
+        console.print(f"  module load {name}")
+        console.print(f"  module help {name}")
+        
+    except ModuleError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

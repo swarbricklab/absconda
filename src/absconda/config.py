@@ -50,6 +50,27 @@ class AbscondaConfig:
     registry: str = "ghcr.io"
     organization: Optional[str] = None
     
+    # Wrapper generation settings
+    wrapper_default_runtime: str = "singularity"
+    wrapper_default_output_dir: Optional[Path] = None
+    wrapper_image_cache: Optional[Path] = None
+    wrapper_default_mounts: Optional[List[str]] = None
+    wrapper_env_passthrough: Optional[List[str]] = None
+    wrapper_env_filter: Optional[List[str]] = None
+    
+    # Module generation settings
+    module_default_output_dir: Optional[Path] = None
+    module_format: str = "tcl"
+    
+    def __post_init__(self):
+        """Initialize default lists."""
+        if self.wrapper_default_mounts is None:
+            self.wrapper_default_mounts = ["$HOME", "$PWD"]
+        if self.wrapper_env_passthrough is None:
+            self.wrapper_env_passthrough = ["USER", "HOME", "LANG", "TZ"]
+        if self.wrapper_env_filter is None:
+            self.wrapper_env_filter = ["PATH", "LD_LIBRARY_PATH", "PYTHONPATH"]
+    
     @classmethod
     def empty(cls) -> AbscondaConfig:
         """Create an empty configuration."""
@@ -155,6 +176,23 @@ def load_config() -> AbscondaConfig:
     registry = merged_data.get("registry", "ghcr.io")
     organization = merged_data.get("organization")
     
+    # Extract wrapper settings
+    wrappers_config = merged_data.get("wrappers", {})
+    wrapper_default_runtime = wrappers_config.get("default_runtime", "singularity")
+    wrapper_default_output_dir_str = wrappers_config.get("default_output_dir")
+    wrapper_default_output_dir = Path(wrapper_default_output_dir_str).expanduser() if wrapper_default_output_dir_str else None
+    wrapper_image_cache_str = wrappers_config.get("image_cache")
+    wrapper_image_cache = Path(wrapper_image_cache_str).expanduser() if wrapper_image_cache_str else None
+    wrapper_default_mounts = wrappers_config.get("default_mounts")
+    wrapper_env_passthrough = wrappers_config.get("env_passthrough")
+    wrapper_env_filter = wrappers_config.get("env_filter")
+    
+    # Extract module settings
+    modules_config = merged_data.get("modules", {})
+    module_default_output_dir_str = modules_config.get("default_output_dir")
+    module_default_output_dir = Path(module_default_output_dir_str).expanduser() if module_default_output_dir_str else None
+    module_format = modules_config.get("format", "tcl")
+    
     return AbscondaConfig(
         remote_builders=remote_builders,
         gcp_project=gcp_project,
@@ -165,6 +203,14 @@ def load_config() -> AbscondaConfig:
         template_dir=template_dir,
         registry=registry,
         organization=organization,
+        wrapper_default_runtime=wrapper_default_runtime,
+        wrapper_default_output_dir=wrapper_default_output_dir,
+        wrapper_image_cache=wrapper_image_cache,
+        wrapper_default_mounts=wrapper_default_mounts,
+        wrapper_env_passthrough=wrapper_env_passthrough,
+        wrapper_env_filter=wrapper_env_filter,
+        module_default_output_dir=module_default_output_dir,
+        module_format=module_format,
     )
 
 

@@ -579,6 +579,8 @@ class _RemoteSession:
                 "--password-stdin"
             )
             commands.append(f"docker push {shlex.quote(image_ref)}")
+            # Clean up credentials after push to avoid storing them on disk
+            commands.append(f"docker logout {shlex.quote(registry)}")
 
         cmd = _remote_shell_command(self.definition, " && ".join(commands))
         try:

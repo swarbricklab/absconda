@@ -1,0 +1,10 @@
+# Absconda container environment
+# This environment packages absconda itself for HPC deployment
+name: absconda
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    - absconda>=0.1.0

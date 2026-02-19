@@ -51,6 +51,9 @@ class RemoteBuilderDefinition:
     provision_command: Optional[List[str]] = None
     health_command: Optional[List[str]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # GCP Secret Manager secret names for GHCR authentication
+    ghcr_token_secret: str = "absconda-github-token"
+    ghcr_user_secret: str = "absconda-github-username"
 
 
 @dataclass(slots=True)
@@ -562,12 +565,41 @@ class _RemoteSession:
             f"DOCKER_BUILDKIT=1 docker build -t {shlex.quote(image_ref)} .",
         ]
 
-        # Push if requested (credentials should already be configured via startup script)
+        # Push if requested
         if push:
-            commands.append(f"sudo docker push {shlex.quote(image_ref)}")
+            # Authenticate with container registry using Secret Manager credentials
+            # Extract registry from image_ref (e.g., ghcr.io from ghcr.io/org/image:tag)
+            registry = image_ref.split("/")[0]
+            token_secret = self.definition.ghcr_token_secret
+            user_secret = self.definition.ghcr_user_secret
+            commands.append(
+                f"gcloud secrets versions access latest --secret={shlex.quote(token_secret)} | "
+                f"docker login {shlex.quote(registry)} "
+                f"-u $(gcloud secrets versions access latest --secret={shlex.quote(user_secret)}) "
+                "--password-stdin"
+            )
+            commands.append(f"docker push {shlex.quote(image_ref)}")
+            # Clean up credentials after push to avoid storing them on disk
+            commands.append(f"docker logout {shlex.quote(registry)}")
 
         cmd = _remote_shell_command(self.definition, " && ".join(commands))
-        _run_subprocess(cmd)
+        try:
+            _run_subprocess(cmd)
+        except RemoteError as exc:
+            if push:
+                # Provide more helpful context for auth failures
+                token_secret = self.definition.ghcr_token_secret
+                raise RemoteError(
+                    f"{exc}\n\n"
+                    "If authentication failed ('denied: denied'), check that:\n"
+                    f"  1. Secret '{token_secret}' contains a valid GitHub PAT\n"
+                    "  2. The token has 'write:packages' scope for pushing\n"
+                    "  3. The token hasn't expired\n"
+                    "Update the secret with:\n"
+                    f"  echo 'TOKEN' | gcloud secrets versions add "
+                    f"{token_secret} --data-file=-"
+                ) from exc
+            raise
 
     def _cleanup_remote(self) -> None:
         cmd = _remote_shell_command(

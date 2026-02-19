@@ -48,6 +48,9 @@ app = typer.Typer(
 remote_app = typer.Typer(help="Provision and manage remote build servers.")
 app.add_typer(remote_app, name="remote")
 
+config_app = typer.Typer(help="Get and set absconda configuration options.")
+app.add_typer(config_app, name="config")
+
 REMOTE_CONFIG_OPTION = typer.Option(
     None,
     "--config",
@@ -1345,6 +1348,194 @@ def module(
     except ModuleError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
+
+
+# ---------------------------------------------------------------------------
+# Config subcommands
+# ---------------------------------------------------------------------------
+
+
+@config_app.command("list")
+def config_list(
+    show_origin: bool = typer.Option(
+        False,
+        "--show-origin",
+        help="Show the origin file for each config value.",
+    ),
+) -> None:
+    """List all configuration settings.
+
+    Shows the merged configuration from all sources (system, user, environment).
+    """
+    from . import config as cfg
+
+    if show_origin:
+        # Show each config file with its contents
+        configs = cfg.load_config_with_origins()
+        if not configs:
+            console.print("No configuration files found.")
+            return
+
+        for path, data in configs:
+            console.print(f"\n[bold cyan]{path}[/bold cyan]")
+            for key_path, value in cfg.flatten_config(data):
+                console.print(f"  {key_path}={value}")
+    else:
+        # Show merged config
+        merged_data: dict = {}
+        for _, data in cfg.load_config_with_origins():
+            merged_data = cfg._merge_configs(merged_data, data)
+
+        if not merged_data:
+            console.print("No configuration set.")
+            return
+
+        for key_path, value in cfg.flatten_config(merged_data):
+            console.print(f"{key_path}={value}")
+
+
+@config_app.command("get")
+def config_get(
+    key: str = typer.Argument(
+        ..., help="Configuration key (dot-notation, e.g., wrappers.default_runtime)."
+    ),
+) -> None:
+    """Get a configuration value.
+
+    Use dot-notation for nested keys (e.g., wrappers.default_runtime).
+    """
+    from . import config as cfg
+
+    value = cfg.get_config_value(key)
+    if value is None:
+        raise typer.Exit(1)
+
+    if isinstance(value, list):
+        for item in value:
+            console.print(item)
+    elif isinstance(value, dict):
+        for k, v in cfg.flatten_config(value, key):
+            console.print(f"{k}={v}")
+    else:
+        console.print(value)
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Configuration key (dot-notation)."),
+    value: str = typer.Argument(..., help="Value to set."),
+    system: bool = typer.Option(
+        False,
+        "--system",
+        help="Write to system-wide config instead of user config.",
+    ),
+) -> None:
+    """Set a configuration value.
+
+    By default, writes to user config (~/.config/absconda/config.yaml).
+    Use --system to write to system config (/etc/xdg/absconda/config.yaml).
+    """
+    # Try to parse value as YAML for proper typing
+    import yaml
+
+    from . import config as cfg
+
+    try:
+        parsed_value = yaml.safe_load(value)
+    except yaml.YAMLError:
+        parsed_value = value
+
+    try:
+        path = cfg.set_config_value(key, parsed_value, system=system)
+        console.print(f"Set {key}={parsed_value} in {path}")
+    except cfg.ConfigError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@config_app.command("unset")
+def config_unset(
+    key: str = typer.Argument(..., help="Configuration key to remove (dot-notation)."),
+    system: bool = typer.Option(
+        False,
+        "--system",
+        help="Remove from system-wide config instead of user config.",
+    ),
+) -> None:
+    """Remove a configuration value.
+
+    By default, removes from user config (~/.config/absconda/config.yaml).
+    Use --system to remove from system config (/etc/xdg/absconda/config.yaml).
+    """
+    from . import config as cfg
+
+    try:
+        path = cfg.unset_config_value(key, system=system)
+        if path:
+            console.print(f"Removed {key} from {path}")
+        else:
+            console.print(f"Key '{key}' not found.")
+            raise typer.Exit(1)
+    except cfg.ConfigError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@config_app.command("edit")
+def config_edit(
+    system: bool = typer.Option(
+        False,
+        "--system",
+        help="Edit system-wide config instead of user config.",
+    ),
+) -> None:
+    """Open the configuration file in an editor.
+
+    Uses $EDITOR or $VISUAL environment variable, falling back to 'vi'.
+    """
+    import os
+    import subprocess
+
+    from . import config as cfg
+
+    path = cfg.get_system_config_path() if system else cfg.get_user_config_path()
+
+    # Create parent directory and empty file if needed
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# Absconda configuration\n# See: https://github.com/swarbricklab/absconda\n\n"
+        )
+
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+
+    try:
+        subprocess.run([editor, str(path)], check=True)
+    except FileNotFoundError as exc:
+        console.print(f"[red]Error:[/red] Editor '{editor}' not found.")
+        raise typer.Exit(1) from exc
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]Error:[/red] Editor exited with code {exc.returncode}")
+        raise typer.Exit(1) from exc
+
+
+@config_app.command("paths")
+def config_paths() -> None:
+    """Show configuration file paths and their status."""
+    from . import config as cfg
+
+    console.print("[bold]Configuration file search order:[/bold]\n")
+
+    for config_dir in cfg.get_config_dirs():
+        config_file = config_dir / "config.yaml"
+        if config_file.exists():
+            console.print(f"  [green]✓[/green] {config_file}")
+        else:
+            console.print(f"  [dim]✗ {config_file}[/dim]")
+
+    console.print()
+    console.print(f"[bold]User config:[/bold] {cfg.get_user_config_path()}")
+    console.print(f"[bold]System config:[/bold] {cfg.get_system_config_path()}")
 
 
 if __name__ == "__main__":  # pragma: no cover

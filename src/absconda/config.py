@@ -233,3 +233,235 @@ def find_remote_builder_config(builder_name: str) -> Optional[Dict[str, Any]]:
     """
     config = load_config()
     return config.remote_builders.get(builder_name)
+
+
+def get_user_config_path() -> Path:
+    """Return the user-level config file path.
+
+    Returns:
+        Path to ~/.config/absconda/config.yaml or $XDG_CONFIG_HOME/absconda/config.yaml
+    """
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return Path(xdg_config_home) / "absconda" / "config.yaml"
+    return Path.home() / ".config" / "absconda" / "config.yaml"
+
+
+def get_system_config_path() -> Path:
+    """Return the system-level config file path.
+
+    Returns:
+        Path to /etc/xdg/absconda/config.yaml or first $XDG_CONFIG_DIRS entry
+    """
+    xdg_config_dirs = os.environ.get("XDG_CONFIG_DIRS", "/etc/xdg")
+    first_dir = xdg_config_dirs.split(":")[0] or "/etc/xdg"
+    return Path(first_dir) / "absconda" / "config.yaml"
+
+
+def load_config_with_origins() -> List[tuple[Path, Dict[str, Any]]]:
+    """Load configuration files with their source paths.
+
+    Returns:
+        List of (path, data) tuples for each config file found, in priority order.
+    """
+    configs: List[tuple[Path, Dict[str, Any]]] = []
+
+    for config_dir in get_config_dirs():
+        config_file = config_dir / "config.yaml"
+        if config_file.exists():
+            try:
+                file_data = _load_yaml_file(config_file)
+                configs.append((config_file, file_data))
+            except ConfigError:
+                pass
+
+    return configs
+
+
+def _get_nested_value(data: Dict[str, Any], key_path: str) -> Any:
+    """Get a value from nested dict using dot-notation key path.
+
+    Args:
+        data: The dictionary to search
+        key_path: Dot-separated key path (e.g., "wrappers.default_runtime")
+
+    Returns:
+        The value at the key path, or None if not found
+    """
+    keys = key_path.split(".")
+    current = data
+
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+        if current is None:
+            return None
+
+    return current
+
+
+def _set_nested_value(data: Dict[str, Any], key_path: str, value: Any) -> None:
+    """Set a value in nested dict using dot-notation key path.
+
+    Args:
+        data: The dictionary to modify
+        key_path: Dot-separated key path (e.g., "wrappers.default_runtime")
+        value: The value to set
+    """
+    keys = key_path.split(".")
+    current = data
+
+    # Navigate to parent, creating dicts as needed
+    for key in keys[:-1]:
+        if key not in current or not isinstance(current[key], dict):
+            current[key] = {}
+        current = current[key]
+
+    # Set the final value
+    current[keys[-1]] = value
+
+
+def _unset_nested_value(data: Dict[str, Any], key_path: str) -> bool:
+    """Remove a value from nested dict using dot-notation key path.
+
+    Args:
+        data: The dictionary to modify
+        key_path: Dot-separated key path (e.g., "wrappers.default_runtime")
+
+    Returns:
+        True if the key was found and removed, False otherwise
+    """
+    keys = key_path.split(".")
+    current = data
+
+    # Navigate to parent
+    for key in keys[:-1]:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        current = current[key]
+
+    # Remove the final key
+    if isinstance(current, dict) and keys[-1] in current:
+        del current[keys[-1]]
+        return True
+    return False
+
+
+def get_config_value(key_path: str) -> Any:
+    """Get a merged config value by dot-notation key path.
+
+    Args:
+        key_path: Dot-separated key path (e.g., "wrappers.default_runtime")
+
+    Returns:
+        The value from merged config, or None if not found
+    """
+    merged_data: Dict[str, Any] = {}
+
+    for config_dir in get_config_dirs():
+        config_file = config_dir / "config.yaml"
+        if config_file.exists():
+            try:
+                file_data = _load_yaml_file(config_file)
+                merged_data = _merge_configs(merged_data, file_data)
+            except ConfigError:
+                pass
+
+    return _get_nested_value(merged_data, key_path)
+
+
+def set_config_value(key_path: str, value: Any, *, system: bool = False) -> Path:
+    """Set a config value in the user or system config file.
+
+    Args:
+        key_path: Dot-separated key path (e.g., "wrappers.default_runtime")
+        value: The value to set
+        system: If True, write to system config; otherwise user config
+
+    Returns:
+        Path to the config file that was modified
+
+    Raises:
+        ConfigError: If the config file cannot be written
+    """
+    config_path = get_system_config_path() if system else get_user_config_path()
+
+    # Load existing config or start fresh
+    data: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            data = _load_yaml_file(config_path)
+        except ConfigError:
+            data = {}
+
+    # Set the value
+    _set_nested_value(data, key_path, value)
+
+    # Write back
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    except OSError as exc:
+        raise ConfigError(f"Failed to write config to {config_path}: {exc}") from exc
+
+    return config_path
+
+
+def unset_config_value(key_path: str, *, system: bool = False) -> Optional[Path]:
+    """Remove a config value from the user or system config file.
+
+    Args:
+        key_path: Dot-separated key path (e.g., "wrappers.default_runtime")
+        system: If True, modify system config; otherwise user config
+
+    Returns:
+        Path to the config file that was modified, or None if key not found
+
+    Raises:
+        ConfigError: If the config file cannot be written
+    """
+    config_path = get_system_config_path() if system else get_user_config_path()
+
+    if not config_path.exists():
+        return None
+
+    try:
+        data = _load_yaml_file(config_path)
+    except ConfigError:
+        return None
+
+    if not _unset_nested_value(data, key_path):
+        return None
+
+    # Write back
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    except OSError as exc:
+        raise ConfigError(f"Failed to write config to {config_path}: {exc}") from exc
+
+    return config_path
+
+
+def flatten_config(data: Dict[str, Any], prefix: str = "") -> List[tuple[str, Any]]:
+    """Flatten a nested dict into a list of (key_path, value) tuples.
+
+    Args:
+        data: The dictionary to flatten
+        prefix: Key prefix for recursion
+
+    Returns:
+        List of (dot-notation key path, value) tuples
+    """
+    items: List[tuple[str, Any]] = []
+
+    for key, value in data.items():
+        full_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            items.extend(flatten_config(value, full_key))
+        else:
+            items.append((full_key, value))
+
+    return items

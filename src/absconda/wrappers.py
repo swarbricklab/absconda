@@ -75,9 +75,7 @@ def generate_wrappers(config: WrapperConfig) -> dict[str, Path]:
     # Load template based on runtime
     template_str = _load_wrapper_template(config.runtime)
     sif_filename = (
-        f"{_sanitize_image_name(config.image_ref)}.sif"
-        if config.runtime == "singularity"
-        else None
+        f"{_sanitize_image_name(config.image_ref)}.sif" if config.runtime == "singularity" else None
     )
 
     # Prepare Jinja2 environment

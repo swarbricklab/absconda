@@ -30,6 +30,8 @@ build/
 
 # Absconda generated artifacts
 /tmp/
+wrappers/absconda-*/
+modulefiles/absconda/0.2.0
 
 # Environment variables
 .env

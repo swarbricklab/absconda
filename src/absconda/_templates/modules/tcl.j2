@@ -18,6 +18,13 @@ module-whatis "{{ description }}"
 
 conflict {{ conflict_name }}
 
+{% if runtime == "singularity" %}
+# Load singularity module as dependency
+if { [module-info mode load] } {
+    module load singularity
+}
+{% endif %}
+
 prepend-path PATH {{ wrapper_dir }}
 
 {% if version %}

@@ -4,6 +4,8 @@
 # Command: {{ command }}
 set -euo pipefail
 
+module load singularity 
+
 {% if image_cache %}
 SIF_CACHE="{{ image_cache }}"
 {% else %}

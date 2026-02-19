@@ -28,6 +28,7 @@ class WrapperConfig:
     extra_mounts: Optional[list[str]] = None
     env_passthrough: Optional[list[str]] = None
     gpu: bool = False
+    env_dir: Optional[str] = None  # Conda env path inside container
 
     def __post_init__(self):
         if self.extra_mounts is None:
@@ -74,9 +75,7 @@ def generate_wrappers(config: WrapperConfig) -> dict[str, Path]:
     # Load template based on runtime
     template_str = _load_wrapper_template(config.runtime)
     sif_filename = (
-        f"{_sanitize_image_name(config.image_ref)}.sif"
-        if config.runtime == "singularity"
-        else None
+        f"{_sanitize_image_name(config.image_ref)}.sif" if config.runtime == "singularity" else None
     )
 
     # Prepare Jinja2 environment
@@ -98,6 +97,7 @@ def generate_wrappers(config: WrapperConfig) -> dict[str, Path]:
             "gpu": config.gpu,
             "sif_filename": sif_filename,
             "image_cache": str(config.image_cache) if config.image_cache else None,
+            "env_dir": config.env_dir,
         }
 
         wrapper_content = template.render(**context)

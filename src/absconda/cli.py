@@ -1152,6 +1152,14 @@ def wrap(
         "--gpu",
         help="Enable GPU support (--nv for Singularity, --gpus all for Docker).",
     ),
+    env_dir: Optional[str] = typer.Option(
+        None,
+        "--env-dir",
+        help=(
+            "Path to conda environment inside container "
+            "(e.g., /opt/conda/envs/myenv). Required for Singularity PATH setup."
+        ),
+    ),
 ) -> None:
     """Generate wrapper scripts for running commands inside containers.
 
@@ -1217,6 +1225,7 @@ def wrap(
         extra_mounts=mount_list,
         env_passthrough=env_list,
         gpu=gpu,
+        env_dir=env_dir,
     )
 
     # Generate wrappers

@@ -202,6 +202,24 @@ def test_wrapper_with_custom_image_cache():
         assert 'SIF_CACHE="/custom/cache"' in content
 
 
+def test_wrapper_with_env_dir():
+    """Test Singularity wrapper sets PATH when env_dir is provided."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = WrapperConfig(
+            image_ref="ghcr.io/test/image:1.0",
+            commands=["python"],
+            runtime="singularity",
+            output_dir=Path(tmpdir),
+            env_dir="/opt/conda/envs/myenv",
+        )
+
+        generate_wrappers(config)
+        content = (Path(tmpdir) / "python").read_text()
+        assert "SINGULARITYENV_PATH" in content
+        assert "/opt/conda/envs/myenv/bin" in content
+        assert "SINGULARITYENV_CONDA_PREFIX" in content
+
+
 def test_empty_commands_list():
     """Test that empty commands list raises error."""
     with tempfile.TemporaryDirectory() as tmpdir:

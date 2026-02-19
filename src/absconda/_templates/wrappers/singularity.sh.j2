@@ -4,6 +4,8 @@
 # Command: {{ command }}
 set -euo pipefail
 
+module load singularity 
+
 {% if image_cache %}
 SIF_CACHE="{{ image_cache }}"
 {% else %}
@@ -30,6 +32,12 @@ MOUNTS+=("-B" "{{ mount }}")
 GPU_FLAG="--nv"
 {% else %}
 GPU_FLAG=""
+{% endif %}
+
+{% if env_dir %}
+# Set PATH to include conda environment
+export SINGULARITYENV_PATH="{{ env_dir }}/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export SINGULARITYENV_CONDA_PREFIX="{{ env_dir }}"
 {% endif %}
 
 # Execute command in container

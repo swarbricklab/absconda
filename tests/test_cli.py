@@ -390,3 +390,206 @@ profiles:
     assert result.exit_code == 0
     assert 'LABEL maintainer="team@example.com"' in result.stdout
     assert 'LABEL owner="data-platform"' in result.stdout
+
+
+def test_build_with_dockerfile_skips_generation(monkeypatch, tmp_path: Path) -> None:
+    """Test that --dockerfile uses the provided Dockerfile instead of generating one."""
+    dockerfile_path = tmp_path / "Dockerfile.custom"
+    dockerfile_path.write_text(
+        """FROM python:3.11-slim
+RUN echo "Custom Dockerfile content"
+"""
+    )
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            "--dockerfile",
+            str(dockerfile_path),
+            "--repository",
+            "ghcr.io/example/custom-image",
+            "--context",
+            str(tmp_path),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert len(commands) == 1
+    assert commands[0][0][0:2] == ["docker", "build"]
+    assert "ghcr.io/example/custom-image:20260410" in commands[0][0]
+
+
+def test_build_with_dockerfile_requires_repository(tmp_path: Path) -> None:
+    """Test that --dockerfile without --file requires --repository."""
+    dockerfile_path = tmp_path / "Dockerfile.custom"
+    dockerfile_path.write_text("FROM python:3.11")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            "--dockerfile",
+            str(dockerfile_path),
+            "--context",
+            str(tmp_path),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 1
+    assert "--repository is required" in result.stdout
+
+
+def test_build_with_dockerfile_and_file_uses_env_name(monkeypatch, tmp_path: Path) -> None:
+    """Test that --dockerfile with --file uses env name for repository resolution."""
+    env_path = write_env(tmp_path)
+    dockerfile_path = tmp_path / "Dockerfile.custom"
+    dockerfile_path.write_text("FROM python:3.11-slim\nRUN echo 'edited'")
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            "--dockerfile",
+            str(dockerfile_path),
+            "--file",
+            str(env_path),
+            "--repository",
+            "ghcr.io/example/cli-demo",
+            "--context",
+            str(tmp_path),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert len(commands) == 1
+    assert "ghcr.io/example/cli-demo:20260410" in commands[0][0]
+
+
+def test_publish_with_dockerfile(monkeypatch, tmp_path: Path) -> None:
+    """Test that publish --dockerfile works for pushed images."""
+    dockerfile_path = tmp_path / "Dockerfile.custom"
+    dockerfile_path.write_text("FROM python:3.11-slim\nRUN pip install flask")
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "publish",
+            "--dockerfile",
+            str(dockerfile_path),
+            "--repository",
+            "ghcr.io/example/flask-app",
+            "--context",
+            str(tmp_path),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert len(commands) == 2  # build + push
+    assert commands[0][0][0:2] == ["docker", "build"]
+    assert commands[1][0] == ["docker", "push", "ghcr.io/example/flask-app:20260410"]
+
+
+def test_build_with_build_args(monkeypatch, tmp_path: Path) -> None:
+    """Test that --build-arg passes arguments to docker build."""
+    env_path = write_env(tmp_path)
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            "--file",
+            str(env_path),
+            "--repository",
+            "ghcr.io/example/testimage",
+            "--context",
+            str(tmp_path),
+            "--build-arg",
+            "PYTHON_VERSION=3.11",
+            "--build-arg",
+            "CACHEBUST=123",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    build_cmd = commands[0][0]
+    assert "--build-arg" in build_cmd
+    assert "PYTHON_VERSION=3.11" in build_cmd
+    assert "CACHEBUST=123" in build_cmd
+
+
+def test_publish_with_build_args(monkeypatch, tmp_path: Path) -> None:
+    """Test that publish --build-arg passes arguments to docker build."""
+    env_path = write_env(tmp_path)
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "publish",
+            "--file",
+            str(env_path),
+            "--repository",
+            "ghcr.io/example/testimage",
+            "--context",
+            str(tmp_path),
+            "--build-arg",
+            "BUILD_DATE=2026-04-10",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    build_cmd = commands[0][0]
+    assert "--build-arg" in build_cmd
+    assert "BUILD_DATE=2026-04-10" in build_cmd

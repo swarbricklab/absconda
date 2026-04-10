@@ -275,10 +275,11 @@ def _run_command(command: list[str], *, cwd: Optional[Path] = None) -> None:
 
 
 def _build_image_local(
-    report: LoadReport,
+    report: Optional[LoadReport],
     *,
     repository: str,
     tag: Optional[str],
+    env_name: str,
     template: Optional[Path],
     builder_override: Optional[str],
     runtime_override: Optional[str],
@@ -286,17 +287,24 @@ def _build_image_local(
     context: Path,
     push: bool,
     renv_lock: Optional[str],
+    dockerfile_override: Optional[str] = None,
+    build_args: Optional[list[str]] = None,
 ) -> str:
-    dockerfile = _render_dockerfile(
-        report,
-        template=template,
-        builder_override=builder_override,
-        runtime_override=runtime_override,
-        multi_stage_override=multi_stage_override,
-        renv_lock=renv_lock,
-    )
+    if dockerfile_override is not None:
+        dockerfile = dockerfile_override
+    elif report is not None:
+        dockerfile = _render_dockerfile(
+            report,
+            template=template,
+            builder_override=builder_override,
+            runtime_override=runtime_override,
+            multi_stage_override=multi_stage_override,
+            renv_lock=renv_lock,
+        )
+    else:
+        raise RuntimeError("Either dockerfile_override or report must be provided")
 
-    image_ref = _image_reference(repository, report.env_name, tag)
+    image_ref = _image_reference(repository, env_name, tag)
     context_path = context.resolve()
 
     with tempfile.TemporaryDirectory(prefix="absconda-build-") as temp_dir:
@@ -304,14 +312,14 @@ def _build_image_local(
         dockerfile_path.write_text(dockerfile, encoding="utf-8")
 
         # If using tarball, copy it into the build context
-        if report.tarball:
+        if report is not None and report.tarball:
             import shutil
 
             tarball_dest = Path(temp_dir) / "conda-env.tar.gz"
             shutil.copy2(report.tarball.path, tarball_dest)
 
         # If using requirements, copy it into the build context
-        if report.requirements:
+        if report is not None and report.requirements:
             import shutil
 
             requirements_dest = Path(temp_dir) / "requirements.txt"
@@ -319,19 +327,23 @@ def _build_image_local(
 
         # For tarball/requirements modes, use temp_dir as build context (self-contained)
         # Otherwise use the specified context directory (for env.yaml and other files)
-        build_context = temp_dir if (report.tarball or report.requirements) else str(context_path)
+        has_tarball_or_requirements = report is not None and (report.tarball or report.requirements)
+        build_context = temp_dir if has_tarball_or_requirements else str(context_path)
 
-        _run_command(
-            [
-                "docker",
-                "build",
-                "-t",
-                image_ref,
-                "-f",
-                str(dockerfile_path),
-                build_context,
-            ]
-        )
+        # Construct docker build command
+        docker_cmd = [
+            "docker",
+            "build",
+            "-t",
+            image_ref,
+        ]
+        # Add build args if provided
+        if build_args:
+            for arg in build_args:
+                docker_cmd.extend(["--build-arg", arg])
+        docker_cmd.extend(["-f", str(dockerfile_path), build_context])
+
+        _run_command(docker_cmd)
 
         if push:
             _run_command(["docker", "push", image_ref])
@@ -340,10 +352,11 @@ def _build_image_local(
 
 
 def _build_image_remote(
-    report: LoadReport,
+    report: Optional[LoadReport],
     *,
     repository: str,
     tag: Optional[str],
+    env_name: str,
     template: Optional[Path],
     builder_override: Optional[str],
     runtime_override: Optional[str],
@@ -352,29 +365,36 @@ def _build_image_remote(
     push: bool,
     renv_lock: Optional[str],
     remote_options: RemoteBuildOptions,
+    dockerfile_override: Optional[str] = None,
+    build_args: Optional[list[str]] = None,
 ) -> str:
-    dockerfile = _render_dockerfile(
-        report,
-        template=template,
-        builder_override=builder_override,
-        runtime_override=runtime_override,
-        multi_stage_override=multi_stage_override,
-        renv_lock=renv_lock,
-    )
+    if dockerfile_override is not None:
+        dockerfile = dockerfile_override
+    elif report is not None:
+        dockerfile = _render_dockerfile(
+            report,
+            template=template,
+            builder_override=builder_override,
+            runtime_override=runtime_override,
+            multi_stage_override=multi_stage_override,
+            renv_lock=renv_lock,
+        )
+    else:
+        raise RuntimeError("Either dockerfile_override or report must be provided")
 
-    image_ref = _image_reference(repository, report.env_name, tag)
+    image_ref = _image_reference(repository, env_name, tag)
     policy_resolution = _active_policy()
     manifest = {
         "absconda_version": __version__,
-        "env_name": report.env_name,
+        "env_name": env_name,
         "image": image_ref,
         "generated_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z",
         "policy_profile": policy_resolution.profile.name,
-        "channels": report.env.channels if report.env else [],
+        "channels": report.env.channels if report is not None and report.env else [],
         "remote_builder": remote_options.builder,
         "push": push,
-        "tarball_mode": report.tarball is not None,
-        "requirements_mode": report.requirements is not None,
+        "tarball_mode": report.tarball is not None if report else False,
+        "requirements_mode": report.requirements is not None if report else False,
     }
 
     try:
@@ -391,6 +411,7 @@ def _build_image_remote(
             shutdown_after=remote_options.shutdown_after,
             manifest=manifest,
             console=console,
+            build_args=build_args,
         )
     except remote.RemoteConfigError as exc:
         console.print(f"[red]Remote config error:[/red] {exc}")
@@ -692,11 +713,91 @@ def build(
         "--remote-off",
         help="Stop the remote builder after the run (requires stop_command).",
     ),
+    dockerfile: Optional[Path] = typer.Option(
+        None,
+        "--dockerfile",
+        help="Path to a pre-existing Dockerfile to use (skips generation).",
+    ),
+    build_arg: Optional[list[str]] = typer.Option(
+        None,
+        "--build-arg",
+        help="Docker build argument (KEY=VALUE). Can be repeated.",
+    ),
 ) -> None:
     """Render a Dockerfile and build the container image."""
 
     _print_policy_banner()
 
+    # Handle --dockerfile mode: use pre-existing Dockerfile
+    if dockerfile is not None:
+        dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
+        if dockerfile_text is None:
+            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+            raise typer.Exit(code=1)
+
+        # When using --dockerfile without an env file, repository is required
+        if file is None and tarball is None and requirements is None:
+            if repository is None:
+                console.print(
+                    "[red]Error:[/red] --repository is required when using --dockerfile "
+                    "without an environment file."
+                )
+                raise typer.Exit(code=1)
+            report = None
+            resolved_repository = repository
+            env_name = _slugify(Path(repository).name)  # derive from repo name
+        else:
+            # Load environment for metadata/env_name but use provided dockerfile
+            report = _load_with_feedback(file, tarball, requirements, snapshot)
+            _print_warnings(report)
+            _enforce_policy_constraints(report)
+            resolved_repository = _resolve_repository(repository, report.env_name)
+            env_name = report.env_name
+
+        remote_opts = _resolve_remote_options(
+            remote_builder, remote_config, remote_wait, remote_off
+        )
+
+        if remote_opts:
+            image_ref = _build_image_remote(
+                report,
+                repository=resolved_repository,
+                tag=tag,
+                env_name=env_name,
+                template=template,
+                builder_override=builder_base,
+                runtime_override=runtime_base,
+                multi_stage_override=multi_stage,
+                context=context,
+                push=push,
+                renv_lock=None,
+                remote_options=remote_opts,
+                dockerfile_override=dockerfile_text,
+                build_args=build_arg,
+            )
+        else:
+            image_ref = _build_image_local(
+                report,
+                repository=resolved_repository,
+                tag=tag,
+                env_name=env_name,
+                template=template,
+                builder_override=builder_base,
+                runtime_override=runtime_base,
+                multi_stage_override=multi_stage,
+                context=context,
+                push=push,
+                renv_lock=None,
+                dockerfile_override=dockerfile_text,
+                build_args=build_arg,
+            )
+
+        console.print(f"[green]Image built:[/green] {image_ref}")
+        if push:
+            console.print(f"[green]Image pushed:[/green] {image_ref}")
+        return
+
+    # Standard mode: generate Dockerfile from environment file
     # Provide default for file if neither file, tarball, nor requirements is specified
     if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
@@ -716,6 +817,7 @@ def build(
             report,
             repository=resolved_repository,
             tag=tag,
+            env_name=report.env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -724,12 +826,14 @@ def build(
             push=push,
             renv_lock=renv_lock_text,
             remote_options=remote_opts,
+            build_args=build_arg,
         )
     else:
         image_ref = _build_image_local(
             report,
             repository=resolved_repository,
             tag=tag,
+            env_name=report.env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -737,6 +841,7 @@ def build(
             context=context,
             push=push,
             renv_lock=renv_lock_text,
+            build_args=build_arg,
         )
 
     console.print(f"[green]Image built:[/green] {image_ref}")
@@ -837,11 +942,101 @@ def publish(
         "--remote-off",
         help="Stop the remote builder after the run (requires stop_command).",
     ),
+    dockerfile: Optional[Path] = typer.Option(
+        None,
+        "--dockerfile",
+        help="Path to a pre-existing Dockerfile to use (skips generation).",
+    ),
+    build_arg: Optional[list[str]] = typer.Option(
+        None,
+        "--build-arg",
+        help="Docker build argument (KEY=VALUE). Can be repeated.",
+    ),
 ) -> None:
     """Build an image, push it, and optionally emit a Singularity artifact."""
 
     _print_policy_banner()
 
+    # Handle --dockerfile mode: use pre-existing Dockerfile
+    if dockerfile is not None:
+        dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
+        if dockerfile_text is None:
+            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+            raise typer.Exit(code=1)
+
+        # When using --dockerfile without an env file, repository is required
+        if file is None and tarball is None and requirements is None:
+            if repository is None:
+                console.print(
+                    "[red]Error:[/red] --repository is required when using --dockerfile "
+                    "without an environment file."
+                )
+                raise typer.Exit(code=1)
+            report = None
+            resolved_repository = repository
+            env_name = _slugify(Path(repository).name)  # derive from repo name
+        else:
+            # Load environment for metadata/env_name but use provided dockerfile
+            report = _load_with_feedback(file, tarball, requirements, snapshot)
+            _print_warnings(report)
+            _enforce_policy_constraints(report)
+            resolved_repository = _resolve_repository(repository, report.env_name)
+            env_name = report.env_name
+
+        remote_opts = _resolve_remote_options(
+            remote_builder, remote_config, remote_wait, remote_off
+        )
+
+        if remote_opts:
+            image_ref = _build_image_remote(
+                report,
+                repository=resolved_repository,
+                tag=tag,
+                env_name=env_name,
+                template=template,
+                builder_override=builder_base,
+                runtime_override=runtime_base,
+                multi_stage_override=multi_stage,
+                context=context,
+                push=True,
+                renv_lock=None,
+                remote_options=remote_opts,
+                dockerfile_override=dockerfile_text,
+                build_args=build_arg,
+            )
+        else:
+            image_ref = _build_image_local(
+                report,
+                repository=resolved_repository,
+                tag=tag,
+                env_name=env_name,
+                template=template,
+                builder_override=builder_base,
+                runtime_override=runtime_base,
+                multi_stage_override=multi_stage,
+                context=context,
+                push=True,
+                renv_lock=None,
+                dockerfile_override=dockerfile_text,
+                build_args=build_arg,
+            )
+
+        console.print(f"[green]Image pushed:[/green] {image_ref}")
+
+        if singularity_out is not None:
+            singularity_out.parent.mkdir(parents=True, exist_ok=True)
+            _run_command(
+                [
+                    "singularity",
+                    "pull",
+                    str(singularity_out),
+                    f"docker://{image_ref}",
+                ]
+            )
+            console.print(f"[green]Singularity image written to[/green] {singularity_out}")
+        return
+
+    # Standard mode: generate Dockerfile from environment file
     # Provide default for file if neither file, tarball, nor requirements is specified
     if file is None and tarball is None and requirements is None:
         file = Path("env.yaml")
@@ -861,6 +1056,7 @@ def publish(
             report,
             repository=resolved_repository,
             tag=tag,
+            env_name=report.env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -869,12 +1065,14 @@ def publish(
             push=True,
             renv_lock=renv_lock_text,
             remote_options=remote_opts,
+            build_args=build_arg,
         )
     else:
         image_ref = _build_image_local(
             report,
             repository=resolved_repository,
             tag=tag,
+            env_name=report.env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -882,6 +1080,7 @@ def publish(
             context=context,
             push=True,
             renv_lock=renv_lock_text,
+            build_args=build_arg,
         )
 
     console.print(f"[green]Image pushed:[/green] {image_ref}")

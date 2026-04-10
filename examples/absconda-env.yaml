@@ -13,4 +13,5 @@ dependencies:
   # Git for cloning repos (optional but useful)
   - git
   - pip:
-    - absconda>=0.1.0
+    # Install from GitHub main branch to get latest code
+    - git+https://github.com/swarbricklab/absconda.git@main

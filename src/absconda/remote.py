@@ -209,6 +209,7 @@ def build_remote_image(
     shutdown_after: bool,
     manifest: Dict[str, Any],
     console: Console,
+    build_args: Optional[List[str]] = None,
 ) -> None:
     """Send a Docker context to the remote builder and run docker build there."""
 
@@ -224,7 +225,7 @@ def build_remote_image(
 
         session = _RemoteSession(definition, console)
         try:
-            session.execute_build(dockerfile, context_path, image_ref, push, manifest)
+            session.execute_build(dockerfile, context_path, image_ref, push, manifest, build_args)
         finally:
             session.cleanup_local()
 
@@ -502,6 +503,7 @@ class _RemoteSession:
         image_ref: str,
         push: bool,
         manifest: Dict[str, Any],
+        build_args: Optional[List[str]] = None,
     ) -> None:
         self.console.print("Packaging Docker context for remote transfer...")
         self._tarball_path = _create_context_tarball(context_path, dockerfile, manifest)
@@ -509,7 +511,7 @@ class _RemoteSession:
         self._upload_tarball()
         try:
             self._extract_context()
-            self._run_build(image_ref, push)
+            self._run_build(image_ref, push, build_args)
         finally:
             self._cleanup_remote()
             # Auto-stop the builder after build completes
@@ -557,12 +559,21 @@ class _RemoteSession:
         )
         _run_subprocess(cmd)
 
-    def _run_build(self, image_ref: str, push: bool) -> None:
+    def _run_build(
+        self, image_ref: str, push: bool, build_args: Optional[List[str]] = None
+    ) -> None:
+        # Construct build args string
+        build_args_str = ""
+        if build_args:
+            build_args_str = " ".join(
+                f"--build-arg {shlex.quote(arg)}" for arg in build_args
+            ) + " "
+
         commands = [
             "set -euo pipefail",
             f"cd {shlex.quote(self.remote_dir)}",
             # Build the image with BuildKit
-            f"DOCKER_BUILDKIT=1 docker build -t {shlex.quote(image_ref)} .",
+            f"DOCKER_BUILDKIT=1 docker build {build_args_str}-t {shlex.quote(image_ref)} .",
         ]
 
         # Push if requested

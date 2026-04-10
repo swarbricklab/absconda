@@ -47,7 +47,7 @@ resource "google_compute_instance" "builder" {
     # Install Docker on Ubuntu
     echo "Installing Docker..."
     apt-get update
-    apt-get install -y ca-certificates curl gnupg
+    apt-get install -y ca-certificates curl gnupg git
     
     # Add Docker's official GPG key
     install -m 0755 -d /etc/apt/keyrings

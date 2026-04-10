@@ -754,7 +754,9 @@ def build(
             resolved_repository = _resolve_repository(repository, report.env_name)
             env_name = report.env_name
 
-        remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
+        remote_opts = _resolve_remote_options(
+            remote_builder, remote_config, remote_wait, remote_off
+        )
 
         if remote_opts:
             image_ref = _build_image_remote(
@@ -981,7 +983,9 @@ def publish(
             resolved_repository = _resolve_repository(repository, report.env_name)
             env_name = report.env_name
 
-        remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
+        remote_opts = _resolve_remote_options(
+            remote_builder, remote_config, remote_wait, remote_off
+        )
 
         if remote_opts:
             image_ref = _build_image_remote(

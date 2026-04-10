@@ -565,9 +565,7 @@ class _RemoteSession:
         # Construct build args string
         build_args_str = ""
         if build_args:
-            build_args_str = " ".join(
-                f"--build-arg {shlex.quote(arg)}" for arg in build_args
-            ) + " "
+            build_args_str = " ".join(f"--build-arg {shlex.quote(arg)}" for arg in build_args) + " "
 
         commands = [
             "set -euo pipefail",

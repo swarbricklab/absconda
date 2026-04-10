@@ -21,10 +21,20 @@ if [[ ! -f "$SIF_FILE" ]]; then
     singularity pull "$SIF_FILE" "$IMAGE_REF"
 fi
 
-# Build mount arguments
+# Build mount arguments (skip paths that don't exist)
 MOUNTS=()
+NO_HOME=""
 {% for mount in mounts %}
-MOUNTS+=("-B" "{{ mount }}")
+_mount="{{ mount }}"
+if [[ -d "$_mount" ]]; then
+    MOUNTS+=("-B" "$_mount")
+fi
+{% endfor %}
+{% for mount in mounts %}
+{% if mount == '$HOME' %}
+# Suppress duplicate-mount warning: Singularity auto-mounts $HOME by default
+NO_HOME="--no-home"
+{% endif %}
 {% endfor %}
 
 {% if gpu %}
@@ -42,6 +52,7 @@ export SINGULARITYENV_CONDA_PREFIX="{{ env_dir }}"
 
 # Execute command in container
 exec singularity exec \
+    $NO_HOME \
     $GPU_FLAG \
     "${MOUNTS[@]}" \
     "$SIF_FILE" \

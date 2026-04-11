@@ -8,6 +8,8 @@ dependencies:
   - pip
   # gcloud CLI for remote builder management
   - google-cloud-sdk
+  # NumPy improves IAP tunnel upload bandwidth
+  - numpy
   # SSH for connecting to remote builders
   - openssh
   # Git for cloning repos (optional but useful)

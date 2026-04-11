@@ -62,6 +62,9 @@ class AbscondaConfig:
     module_default_output_dir: Optional[Path] = None
     module_format: str = "tcl"
 
+    # Default remote builder
+    default_remote_builder: Optional[str] = None
+
     def __post_init__(self):
         """Initialize default lists."""
         if self.wrapper_default_mounts is None:
@@ -201,6 +204,9 @@ def load_config() -> AbscondaConfig:
     )
     module_format = modules_config.get("format", "tcl")
 
+    # Extract default remote builder
+    default_remote_builder = merged_data.get("default_remote_builder")
+
     return AbscondaConfig(
         remote_builders=remote_builders,
         gcp_project=gcp_project,
@@ -219,6 +225,7 @@ def load_config() -> AbscondaConfig:
         wrapper_env_filter=wrapper_env_filter,
         module_default_output_dir=module_default_output_dir,
         module_format=module_format,
+        default_remote_builder=default_remote_builder,
     )
 
 

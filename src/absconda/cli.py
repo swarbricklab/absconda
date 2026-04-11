@@ -261,6 +261,8 @@ def _resolve_remote_options(
     remote_wait: int,
     remote_off: bool,
 ) -> Optional[RemoteBuildOptions]:
+    from .config import load_config
+
     if remote_builder is None:
         config = load_config()
         if config.default_remote_builder:
@@ -1486,7 +1488,8 @@ def module(
     wrapper_dir: Optional[Path] = typer.Option(
         None,
         "--wrapper-dir",
-        help="Directory containing wrapper scripts (defaults to wrappers.default_output_dir/<name>/<tag>).",
+        help="Directory containing wrapper scripts "
+        "(defaults to wrappers.default_output_dir/<name>/<tag>).",
     ),
     output_dir: Optional[Path] = typer.Option(
         None,

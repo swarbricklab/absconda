@@ -157,8 +157,10 @@ def test_wrapper_with_custom_mounts():
 
         generate_wrappers(config)
         content = (Path(tmpdir) / "python").read_text()
-        assert '"-B" "/data"' in content
-        assert '"-B" "/scratch"' in content
+        # Mounts are conditionally added if they exist
+        assert '_mount="/data"' in content
+        assert '_mount="/scratch"' in content
+        assert 'MOUNTS+=("-B" "$_mount")' in content
 
 
 def test_wrapper_with_env_passthrough():

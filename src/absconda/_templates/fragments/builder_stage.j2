@@ -1,5 +1,11 @@
 FROM {{ builder_base }} AS builder
 
+{% if needs_git %}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+USER $MAMBA_USER
+{% endif %}
+
 COPY <<'ABSCONDA_ENV' /tmp/env.yaml
 {{ env_yaml }}
 ABSCONDA_ENV

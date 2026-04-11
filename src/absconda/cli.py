@@ -237,12 +237,34 @@ def _image_reference(repository: str, env_name: str, tag: Optional[str]) -> str:
     return f"{repository}:{final_tag}"
 
 
+def _image_name_tag(image_ref: str) -> str:
+    """Extract name/tag from an image reference.
+
+    ghcr.io/swarbricklab/csvkit:20260410 -> csvkit/20260410
+    myenv:latest -> myenv/latest
+    """
+    # Strip registry prefix (anything before the last path component with a /)
+    without_registry = re.sub(r"^[^/]+\.(io|com|org)/", "", image_ref)
+    # Strip org prefix if present (e.g., swarbricklab/csvkit -> csvkit)
+    parts = without_registry.rsplit("/", 1)
+    name_and_tag = parts[-1]
+    # Split name:tag -> name/tag
+    if ":" in name_and_tag:
+        name, tag = name_and_tag.split(":", 1)
+        return f"{name}/{tag}"
+    return name_and_tag
+
+
 def _resolve_remote_options(
     remote_builder: Optional[str],
     remote_config: Optional[Path],
     remote_wait: int,
     remote_off: bool,
 ) -> Optional[RemoteBuildOptions]:
+    if remote_builder is None:
+        config = load_config()
+        if config.default_remote_builder:
+            remote_builder = config.default_remote_builder
     if remote_builder is None:
         if remote_off:
             console.print(
@@ -1383,14 +1405,11 @@ def wrap(
 
     # Determine output directory
     if output_dir is None:
+        name_tag = _image_name_tag(image)
         if config.wrapper_default_output_dir:
-            output_dir = config.wrapper_default_output_dir
+            output_dir = config.wrapper_default_output_dir / name_tag
         else:
-            # Default to ~/.local/absconda/wrappers/<sanitized-image-name>
-            from .wrappers import _sanitize_image_name
-
-            safe_name = _sanitize_image_name(image)
-            output_dir = Path.home() / ".local" / "absconda" / "wrappers" / safe_name
+            output_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
 
     # Determine image cache
     if image_cache is None and runtime == "singularity":
@@ -1459,30 +1478,30 @@ def wrap(
 
 @app.command()
 def module(
-    name: str = typer.Option(
-        ...,
+    name: Optional[str] = typer.Option(
+        None,
         "--name",
-        help="Module name with version (e.g., myenv/1.0).",
+        help="Module name with version (e.g., myenv/1.0). Defaults to <name>/<tag> from --image.",
     ),
-    wrapper_dir: Path = typer.Option(
-        ...,
+    wrapper_dir: Optional[Path] = typer.Option(
+        None,
         "--wrapper-dir",
-        help="Directory containing wrapper scripts.",
+        help="Directory containing wrapper scripts (defaults to wrappers.default_output_dir/<name>/<tag>).",
     ),
     output_dir: Optional[Path] = typer.Option(
         None,
         "--output-dir",
         help="Directory for module file (defaults to config or ~/.local/absconda/modulefiles).",
     ),
-    description: str = typer.Option(
-        ...,
+    description: Optional[str] = typer.Option(
+        None,
         "--description",
-        help="Module description for help text.",
+        help="Module description for help text. Defaults to '<name> environment'.",
     ),
     image: str = typer.Option(
         ...,
         "--image",
-        help="Container image reference (for metadata).",
+        help="Container image reference (for metadata and deriving defaults).",
     ),
     runtime: str = typer.Option(
         "singularity",
@@ -1505,6 +1524,21 @@ def module(
 
     # Load configuration
     config = load_config()
+
+    # Derive defaults from image ref
+    name_tag = _image_name_tag(image)
+
+    if name is None:
+        name = name_tag
+
+    if description is None:
+        description = f"{name_tag.split('/')[0]} environment"
+
+    if wrapper_dir is None:
+        if config.wrapper_default_output_dir:
+            wrapper_dir = config.wrapper_default_output_dir / name_tag
+        else:
+            wrapper_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
 
     # Determine output directory
     if output_dir is None:

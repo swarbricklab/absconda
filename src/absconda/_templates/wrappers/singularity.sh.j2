@@ -12,14 +12,6 @@ SIF_CACHE="{{ image_cache }}"
 SIF_CACHE="${HOME}/.local/absconda/sif-cache"
 {% endif %}
 SIF_FILE="${SIF_CACHE}/{{ sif_filename }}"
-IMAGE_REF="docker://{{ image_ref }}"
-
-# Pull SIF if missing
-if [[ ! -f "$SIF_FILE" ]]; then
-    mkdir -p "$SIF_CACHE"
-    echo "Pulling Singularity image to cache..." >&2
-    singularity pull "$SIF_FILE" "$IMAGE_REF"
-fi
 
 # Build mount arguments (skip paths that don't exist)
 MOUNTS=()

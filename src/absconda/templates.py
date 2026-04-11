@@ -135,6 +135,13 @@ def _build_export_block(env_dir: str, env_name: str) -> list[str]:
     ]
 
 
+def _needs_git(env: Optional[EnvSpec]) -> bool:
+    """Check whether any pip dependency uses a git+ URL."""
+    if env is None:
+        return False
+    return any(dep.startswith("pip::git+") for dep in env.dependencies)
+
+
 def _build_context(
     config: RenderConfig,
     *,
@@ -164,6 +171,7 @@ def _build_context(
         "tarball_filename": config.tarball_filename or "",
         "requirements_mode": config.requirements_filename is not None,
         "requirements_filename": config.requirements_filename or "",
+        "needs_git": _needs_git(config.env),
     }
 
 

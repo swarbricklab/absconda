@@ -263,6 +263,7 @@ def _resolve_remote_options(
 ) -> Optional[RemoteBuildOptions]:
     if remote_builder is None:
         from .config import load_config
+
         config = load_config()
         if config.default_remote_builder:
             remote_builder = config.default_remote_builder
@@ -1264,9 +1265,7 @@ def _deploy_image(
         image_cache.mkdir(parents=True, exist_ok=True)
         sif_path = image_cache / sif_filename
         console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
-        _run_command(
-            ["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"]
-        )
+        _run_command(["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"])
         console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
 
     # Parse command list (needed by both wrappers and module)
@@ -1365,7 +1364,7 @@ def _deploy_image(
     # --- Summary ---
     console.print(f"\n[bold green]Deployed:[/bold green] {image_ref}")
     if not no_module and module_output_dir:
-        console.print(f"\n[bold cyan]Usage:[/bold cyan]")
+        console.print("\n[bold cyan]Usage:[/bold cyan]")
         console.print(f"  module use {module_output_dir}")
         console.print(f"  module load {name_tag}")
 
@@ -1374,7 +1373,8 @@ def _deploy_image(
 def deploy(
     image: Optional[str] = typer.Argument(
         None,
-        help="Container image reference (e.g., ghcr.io/org/env:tag). Omit to build first with --file.",
+        help="Container image reference (e.g., ghcr.io/org/env:tag). "
+        "Omit to build first with --file.",
     ),
     commands: Optional[str] = typer.Option(
         None,
@@ -1958,7 +1958,8 @@ def module(
     wrapper_dir: Optional[Path] = typer.Option(
         None,
         "--wrapper-dir",
-        help="Directory containing wrapper scripts (defaults to wrappers.default_output_dir/<name>/<tag>).",
+        help="Directory containing wrapper scripts "
+        "(defaults to wrappers.default_output_dir/<name>/<tag>).",
     ),
     output_dir: Optional[Path] = typer.Option(
         None,

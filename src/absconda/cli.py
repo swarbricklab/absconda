@@ -261,9 +261,8 @@ def _resolve_remote_options(
     remote_wait: int,
     remote_off: bool,
 ) -> Optional[RemoteBuildOptions]:
-    from .config import load_config
-
     if remote_builder is None:
+        from .config import load_config
         config = load_config()
         if config.default_remote_builder:
             remote_builder = config.default_remote_builder
@@ -936,11 +935,6 @@ def publish(
         "--context",
         help="Docker build context directory.",
     ),
-    singularity_out: Optional[Path] = typer.Option(
-        None,
-        "--singularity-out",
-        help="Optional path for the resulting Singularity .sif artifact.",
-    ),
     renv_lock: Optional[Path] = typer.Option(
         None,
         "--renv-lock",
@@ -977,7 +971,7 @@ def publish(
         help="Docker build argument (KEY=VALUE). Can be repeated.",
     ),
 ) -> None:
-    """Build an image, push it, and optionally emit a Singularity artifact."""
+    """Build a container image and push it to a registry."""
 
     _print_policy_banner()
 
@@ -1046,18 +1040,6 @@ def publish(
             )
 
         console.print(f"[green]Image pushed:[/green] {image_ref}")
-
-        if singularity_out is not None:
-            singularity_out.parent.mkdir(parents=True, exist_ok=True)
-            _run_command(
-                [
-                    "singularity",
-                    "pull",
-                    str(singularity_out),
-                    f"docker://{image_ref}",
-                ]
-            )
-            console.print(f"[green]Singularity image written to[/green] {singularity_out}")
         return
 
     # Standard mode: generate Dockerfile from environment file
@@ -1109,17 +1091,505 @@ def publish(
 
     console.print(f"[green]Image pushed:[/green] {image_ref}")
 
-    if singularity_out is not None:
-        singularity_out.parent.mkdir(parents=True, exist_ok=True)
-        _run_command(
-            [
-                "singularity",
-                "pull",
-                str(singularity_out),
-                f"docker://{image_ref}",
-            ]
+
+def _publish_and_get_ref(
+    *,
+    file: Optional[Path],
+    tarball: Optional[Path],
+    requirements: Optional[Path],
+    snapshot: Optional[Path],
+    repository: Optional[str],
+    tag: Optional[str],
+    template: Optional[Path],
+    builder_base: Optional[str],
+    runtime_base: Optional[str],
+    multi_stage: Optional[bool],
+    context: Path,
+    renv_lock: Optional[Path],
+    remote_builder: Optional[str],
+    remote_config: Optional[Path],
+    remote_wait: int,
+    remote_off: bool,
+    dockerfile: Optional[Path],
+    build_arg: Optional[list[str]],
+) -> str:
+    """Build, push, and return the image reference. Shared by publish and deploy."""
+
+    _print_policy_banner()
+
+    # Handle --dockerfile mode
+    if dockerfile is not None:
+        dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
+        if dockerfile_text is None:
+            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+            raise typer.Exit(code=1)
+
+        if file is None and tarball is None and requirements is None:
+            if repository is None:
+                console.print(
+                    "[red]Error:[/red] --repository is required when using --dockerfile "
+                    "without an environment file."
+                )
+                raise typer.Exit(code=1)
+            report = None
+            resolved_repository = repository
+            env_name = _slugify(Path(repository).name)
+        else:
+            report = _load_with_feedback(file, tarball, requirements, snapshot)
+            _print_warnings(report)
+            _enforce_policy_constraints(report)
+            resolved_repository = _resolve_repository(repository, report.env_name)
+            env_name = report.env_name
+
+        remote_opts = _resolve_remote_options(
+            remote_builder, remote_config, remote_wait, remote_off
         )
-        console.print(f"[green]Singularity image written to[/green] {singularity_out}")
+
+        if remote_opts:
+            return _build_image_remote(
+                report,
+                repository=resolved_repository,
+                tag=tag,
+                env_name=env_name,
+                template=template,
+                builder_override=builder_base,
+                runtime_override=runtime_base,
+                multi_stage_override=multi_stage,
+                context=context,
+                push=True,
+                renv_lock=None,
+                remote_options=remote_opts,
+                dockerfile_override=dockerfile_text,
+                build_args=build_arg,
+            )
+        else:
+            return _build_image_local(
+                report,
+                repository=resolved_repository,
+                tag=tag,
+                env_name=env_name,
+                template=template,
+                builder_override=builder_base,
+                runtime_override=runtime_base,
+                multi_stage_override=multi_stage,
+                context=context,
+                push=True,
+                renv_lock=None,
+                dockerfile_override=dockerfile_text,
+                build_args=build_arg,
+            )
+
+    # Standard mode
+    if file is None and tarball is None and requirements is None:
+        file = Path("env.yaml")
+
+    report = _load_with_feedback(file, tarball, requirements, snapshot)
+    _print_warnings(report)
+    _enforce_policy_constraints(report)
+    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
+    resolved_repository = _resolve_repository(repository, report.env_name)
+
+    remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
+
+    if remote_opts:
+        return _build_image_remote(
+            report,
+            repository=resolved_repository,
+            tag=tag,
+            env_name=report.env_name,
+            template=template,
+            builder_override=builder_base,
+            runtime_override=runtime_base,
+            multi_stage_override=multi_stage,
+            context=context,
+            push=True,
+            renv_lock=renv_lock_text,
+            remote_options=remote_opts,
+            build_args=build_arg,
+        )
+    else:
+        return _build_image_local(
+            report,
+            repository=resolved_repository,
+            tag=tag,
+            env_name=report.env_name,
+            template=template,
+            builder_override=builder_base,
+            runtime_override=runtime_base,
+            multi_stage_override=multi_stage,
+            context=context,
+            push=True,
+            renv_lock=renv_lock_text,
+            build_args=build_arg,
+        )
+
+
+def _deploy_image(
+    image_ref: str,
+    *,
+    commands: Optional[str],
+    runtime: str,
+    image_cache: Optional[Path],
+    output_dir: Optional[Path],
+    module_output_dir: Optional[Path],
+    extra_mounts: Optional[str],
+    env: Optional[str],
+    gpu: bool,
+    env_dir: Optional[str],
+    no_wrap: bool,
+    no_module: bool,
+) -> None:
+    """Pull a SIF, generate wrappers and a module file for an image reference."""
+    from .config import load_config
+    from .wrappers import WrapperConfig, WrapperError, _sanitize_image_name, generate_wrappers
+
+    config = load_config()
+
+    # Resolve runtime
+    if runtime == "singularity":
+        runtime = config.wrapper_default_runtime or "singularity"
+
+    # Resolve image cache
+    if image_cache is None and runtime == "singularity":
+        if config.wrapper_image_cache:
+            image_cache = config.wrapper_image_cache
+        else:
+            image_cache = Path.home() / ".local" / "absconda" / "sif-cache"
+
+    name_tag = _image_name_tag(image_ref)
+
+    # --- Step 1: Pull SIF ---
+    if runtime == "singularity":
+        sif_filename = f"{_sanitize_image_name(image_ref)}.sif"
+        image_cache.mkdir(parents=True, exist_ok=True)
+        sif_path = image_cache / sif_filename
+        console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
+        _run_command(
+            ["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"]
+        )
+        console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
+
+    # Parse command list (needed by both wrappers and module)
+    command_list: list[str] = []
+    if commands is not None:
+        command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
+    elif not no_wrap:
+        console.print(
+            "[red]Error:[/red] --commands is required for deploy.\n"
+            "Specify commands to wrap, e.g., --commands python,pip,jupyter"
+        )
+        raise typer.Exit(code=1)
+
+    # --- Step 2: Generate wrappers ---
+    if not no_wrap:
+        # Determine output directory
+        if output_dir is None:
+            if config.wrapper_default_output_dir:
+                output_dir = config.wrapper_default_output_dir / name_tag
+            else:
+                output_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
+
+        # Parse mounts
+        mount_list = []
+        if extra_mounts:
+            mount_list = [m.strip() for m in extra_mounts.split(",") if m.strip()]
+        if config.wrapper_default_mounts:
+            mount_list = config.wrapper_default_mounts + mount_list
+
+        # Parse environment variables
+        env_list = []
+        if env:
+            env_list = [e.strip() for e in env.split(",") if e.strip()]
+        if config.wrapper_env_passthrough:
+            env_list = config.wrapper_env_passthrough + env_list
+
+        wrapper_config = WrapperConfig(
+            image_ref=image_ref,
+            commands=command_list,
+            runtime=runtime,
+            output_dir=output_dir,
+            image_cache=image_cache,
+            extra_mounts=mount_list,
+            env_passthrough=env_list,
+            gpu=gpu,
+            env_dir=env_dir,
+        )
+
+        try:
+            wrapper_paths = generate_wrappers(wrapper_config)
+            console.print(
+                f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper(s) in {output_dir}"
+            )
+        except WrapperError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+    # --- Step 3: Generate module file ---
+    if not no_module:
+        from .modules import ModuleConfig, ModuleError, generate_module
+
+        # Determine wrapper dir for module (same as output_dir above)
+        wrapper_dir = output_dir
+        if wrapper_dir is None:
+            if config.wrapper_default_output_dir:
+                wrapper_dir = config.wrapper_default_output_dir / name_tag
+            else:
+                wrapper_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
+
+        if module_output_dir is None:
+            if config.module_default_output_dir:
+                module_output_dir = config.module_default_output_dir
+            else:
+                module_output_dir = Path.home() / ".local" / "absconda" / "modulefiles"
+
+        module_name = name_tag
+        description = f"{name_tag.split('/')[0]} environment"
+
+        module_config = ModuleConfig(
+            name=module_name,
+            wrapper_dir=wrapper_dir,
+            output_dir=module_output_dir,
+            description=description,
+            image_ref=image_ref,
+            runtime=runtime,
+            commands=command_list or None,
+        )
+
+        try:
+            module_file = generate_module(module_config)
+            console.print(f"[green]✓[/green] Generated module file: {module_file}")
+        except ModuleError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+    # --- Summary ---
+    console.print(f"\n[bold green]Deployed:[/bold green] {image_ref}")
+    if not no_module and module_output_dir:
+        console.print(f"\n[bold cyan]Usage:[/bold cyan]")
+        console.print(f"  module use {module_output_dir}")
+        console.print(f"  module load {name_tag}")
+
+
+@app.command()
+def deploy(
+    image: Optional[str] = typer.Argument(
+        None,
+        help="Container image reference (e.g., ghcr.io/org/env:tag). Omit to build first with --file.",
+    ),
+    commands: Optional[str] = typer.Option(
+        None,
+        "--commands",
+        help="Comma-separated list of commands to wrap (e.g., python,pip,jupyter).",
+    ),
+    runtime: str = typer.Option(
+        "singularity",
+        "--runtime",
+        help="Container runtime: 'singularity' or 'docker' (defaults to config).",
+    ),
+    image_cache: Optional[Path] = typer.Option(
+        None,
+        "--image-cache",
+        help="Directory to pull the SIF image into (defaults to config).",
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory for wrapper scripts (defaults to config).",
+    ),
+    module_output_dir: Optional[Path] = typer.Option(
+        None,
+        "--module-dir",
+        help="Directory for module files (defaults to config).",
+    ),
+    extra_mounts: Optional[str] = typer.Option(
+        None,
+        "--extra-mounts",
+        help="Additional volume mounts (comma-separated paths).",
+    ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        help="Additional environment variables to pass through (comma-separated).",
+    ),
+    gpu: bool = typer.Option(
+        False,
+        "--gpu",
+        help="Enable GPU support (--nv for Singularity, --gpus all for Docker).",
+    ),
+    env_dir: Optional[str] = typer.Option(
+        None,
+        "--env-dir",
+        help="Path to conda environment inside container.",
+    ),
+    no_wrap: bool = typer.Option(
+        False,
+        "--no-wrap",
+        help="Skip wrapper generation.",
+    ),
+    no_module: bool = typer.Option(
+        False,
+        "--no-module",
+        help="Skip module file generation.",
+    ),
+    # --- Build flags (used when --file is provided to build first) ---
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Path to a Conda environment file (triggers build + push before deploy).",
+    ),
+    repository: Optional[str] = typer.Option(
+        None,
+        "--repository",
+        help="Target OCI repository (used with --file).",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Image tag (used with --file). Defaults to 'YYYYMMDD'.",
+    ),
+    tarball: Optional[Path] = typer.Option(
+        None,
+        "--tarball",
+        "-t",
+        help="Path to a pre-packed conda tarball (alternative to --file).",
+    ),
+    requirements: Optional[Path] = typer.Option(
+        None,
+        "--requirements",
+        "-r",
+        help="Path to a pip requirements.txt file (alternative to --file).",
+    ),
+    snapshot: Optional[Path] = typer.Option(
+        None,
+        "--snapshot",
+        help="Optional snapshot generated via 'conda env export'.",
+    ),
+    template: Optional[Path] = typer.Option(
+        None,
+        "--template",
+        help="Path to a custom template file.",
+    ),
+    builder_base: Optional[str] = typer.Option(
+        None,
+        "--builder-base",
+        help="Override the builder stage base image.",
+    ),
+    runtime_base: Optional[str] = typer.Option(
+        None,
+        "--runtime-base",
+        help="Override the runtime stage base image.",
+    ),
+    multi_stage: Optional[bool] = typer.Option(
+        None,
+        "--multi-stage/--single-stage",
+        help="Force enabling or disabling multi-stage builds.",
+    ),
+    context: Path = typer.Option(
+        Path("."),
+        "--context",
+        help="Docker build context directory.",
+    ),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        help="Path to an renv.lock file.",
+    ),
+    remote_builder: Optional[str] = typer.Option(
+        None,
+        "--remote-builder",
+        help="Name of the remote builder.",
+    ),
+    remote_config: Optional[Path] = typer.Option(
+        None,
+        "--remote-config",
+        help="Path to absconda-remote.yaml.",
+    ),
+    remote_wait: int = typer.Option(
+        900,
+        "--remote-wait",
+        help="Seconds to wait for a busy remote builder.",
+    ),
+    remote_off: bool = typer.Option(
+        False,
+        "--remote-off",
+        help="Stop the remote builder after the run.",
+    ),
+    dockerfile: Optional[Path] = typer.Option(
+        None,
+        "--dockerfile",
+        help="Path to a pre-existing Dockerfile (skips generation).",
+    ),
+    build_arg: Optional[list[str]] = typer.Option(
+        None,
+        "--build-arg",
+        help="Docker build argument (KEY=VALUE). Can be repeated.",
+    ),
+) -> None:
+    """Pull a container image, generate wrappers, and create a module file.
+
+    Can deploy an existing image by reference, or build+push first
+    when --file (or --tarball/--requirements) is provided.
+
+    \b
+    Examples:
+      # Deploy an existing image:
+      absconda deploy ghcr.io/org/myenv:20260412
+
+      # Full pipeline (build + push + deploy):
+      absconda deploy --file env.yaml --remote-builder gcp-builder --commands python,pip
+    """
+
+    has_build_input = file is not None or tarball is not None or requirements is not None
+
+    if image is None and not has_build_input:
+        console.print(
+            "[red]Error:[/red] Provide an image reference as an argument, "
+            "or use --file/--tarball/--requirements to build first."
+        )
+        raise typer.Exit(code=1)
+
+    # If build inputs are provided, run publish first
+    if has_build_input:
+        image_ref = _publish_and_get_ref(
+            file=file,
+            tarball=tarball,
+            requirements=requirements,
+            snapshot=snapshot,
+            repository=repository,
+            tag=tag,
+            template=template,
+            builder_base=builder_base,
+            runtime_base=runtime_base,
+            multi_stage=multi_stage,
+            context=context,
+            renv_lock=renv_lock,
+            remote_builder=remote_builder,
+            remote_config=remote_config,
+            remote_wait=remote_wait,
+            remote_off=remote_off,
+            dockerfile=dockerfile,
+            build_arg=build_arg,
+        )
+        console.print(f"[green]Image pushed:[/green] {image_ref}")
+    else:
+        image_ref = image
+
+    # Deploy: pull + wrap + module
+    _deploy_image(
+        image_ref,
+        commands=commands,
+        runtime=runtime,
+        image_cache=image_cache,
+        output_dir=output_dir,
+        module_output_dir=module_output_dir,
+        extra_mounts=extra_mounts,
+        env=env,
+        gpu=gpu,
+        env_dir=env_dir,
+        no_wrap=no_wrap,
+        no_module=no_module,
+    )
 
 
 def _load_remote_definition_or_exit(
@@ -1488,8 +1958,7 @@ def module(
     wrapper_dir: Optional[Path] = typer.Option(
         None,
         "--wrapper-dir",
-        help="Directory containing wrapper scripts "
-        "(defaults to wrappers.default_output_dir/<name>/<tag>).",
+        help="Directory containing wrapper scripts (defaults to wrappers.default_output_dir/<name>/<tag>).",
     ),
     output_dir: Optional[Path] = typer.Option(
         None,

@@ -62,9 +62,6 @@ class AbscondaConfig:
     module_default_output_dir: Optional[Path] = None
     module_format: str = "tcl"
 
-    # Publish defaults
-    publish_pull: bool = True
-
     # Default remote builder
     default_remote_builder: Optional[str] = None
 
@@ -207,10 +204,6 @@ def load_config() -> AbscondaConfig:
     )
     module_format = modules_config.get("format", "tcl")
 
-    # Extract publish settings
-    publish_config = merged_data.get("publish", {})
-    publish_pull = publish_config.get("pull", True)
-
     # Extract default remote builder
     default_remote_builder = merged_data.get("default_remote_builder")
 
@@ -232,7 +225,6 @@ def load_config() -> AbscondaConfig:
         wrapper_env_filter=wrapper_env_filter,
         module_default_output_dir=module_default_output_dir,
         module_format=module_format,
-        publish_pull=publish_pull,
         default_remote_builder=default_remote_builder,
     )
 

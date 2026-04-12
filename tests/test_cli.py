@@ -275,6 +275,7 @@ def test_build_invokes_docker_with_expected_tag(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20251129")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -300,7 +301,8 @@ def test_build_invokes_docker_with_expected_tag(monkeypatch, tmp_path: Path) -> 
     assert build_cmd[-1] == str(tmp_path.resolve())
 
 
-def test_publish_pushes_and_generates_singularity(monkeypatch, tmp_path: Path) -> None:
+def test_publish_pushes_image(monkeypatch, tmp_path: Path) -> None:
+    """Test that publish builds and pushes (no pull — that's deploy's job now)."""
     env_path = write_env(tmp_path)
     commands: List[Tuple[list[str], Path | None]] = []
 
@@ -309,8 +311,7 @@ def test_publish_pushes_and_generates_singularity(monkeypatch, tmp_path: Path) -
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20251129")
-
-    sif_path = tmp_path / "artifacts" / "env.sif"
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -323,18 +324,15 @@ def test_publish_pushes_and_generates_singularity(monkeypatch, tmp_path: Path) -
             str(env_path),
             "--context",
             str(tmp_path),
-            "--singularity-out",
-            str(sif_path),
         ],
         env={"HOME": str(tmp_path)},
     )
 
     assert result.exit_code == 0
-    assert len(commands) == 3
+    assert len(commands) == 2  # build + push
     image_ref = "ghcr.io/example/absconda:20251129"
     assert commands[0][0][0:2] == ["docker", "build"]
     assert commands[1][0] == ["docker", "push", image_ref]
-    assert commands[2][0] == ["singularity", "pull", str(sif_path), f"docker://{image_ref}"]
 
 
 def test_generate_rejects_disallowed_channel(monkeypatch, tmp_path: Path) -> None:
@@ -408,6 +406,7 @@ RUN echo "Custom Dockerfile content"
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -465,6 +464,7 @@ def test_build_with_dockerfile_and_file_uses_env_name(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -500,6 +500,7 @@ def test_publish_with_dockerfile(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -533,6 +534,7 @@ def test_build_with_build_args(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -571,6 +573,7 @@ def test_publish_with_build_args(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
     monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -593,3 +596,60 @@ def test_publish_with_build_args(monkeypatch, tmp_path: Path) -> None:
     build_cmd = commands[0][0]
     assert "--build-arg" in build_cmd
     assert "BUILD_DATE=2026-04-10" in build_cmd
+
+
+def test_deploy_pulls_and_wraps(monkeypatch, tmp_path: Path) -> None:
+    """Test that deploy pulls a SIF, generates wrappers, and creates a module."""
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+
+    wrapper_dir = tmp_path / "wrappers"
+    module_dir = tmp_path / "modules"
+    cache_dir = tmp_path / "sif-cache"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "deploy",
+            "ghcr.io/example/myenv:20260412",
+            "--commands",
+            "python,pip",
+            "--output-dir",
+            str(wrapper_dir),
+            "--module-dir",
+            str(module_dir),
+            "--image-cache",
+            str(cache_dir),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.stdout
+
+    # Should have called singularity pull
+    pull_cmds = [c for c, _ in commands if c[0] == "singularity"]
+    assert len(pull_cmds) == 1
+    assert pull_cmds[0][1] == "pull"
+
+    # Should have created wrapper scripts
+    assert wrapper_dir.exists()
+
+    # Should have created a module file
+    assert module_dir.exists()
+
+
+def test_deploy_requires_image_or_file(tmp_path: Path) -> None:
+    """Test that deploy errors when neither image nor --file is provided."""
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["deploy"],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code == 1
+    assert "image reference" in result.stdout.lower() or "Error" in result.stdout

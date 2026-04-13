@@ -428,3 +428,4 @@ def test_wrapper_with_pbs_and_singularity_shims():
 
         # Shim scripts exist
         assert (Path(tmpdir) / "singularity-shims" / "singularity").exists()
+        assert (Path(tmpdir) / "singularity-shims" / "mksquashfs").exists()

@@ -13,10 +13,10 @@ jobs:
       contents: read
 
     env:
-      NCI_USER: ${{ secrets.NCI_USER }}
+      NCI_USER: ${{ secrets.USER_NAME }}
       NCI_PROJECT: a56
-      DEPLOY_DIR: /scratch/a56/${{ secrets.NCI_USER }}/ci/absconda/run-${{ github.run_id }}
-      SA_KEY_PATH: /scratch/a56/${{ secrets.NCI_USER }}/ci/absconda/run-${{ github.run_id }}/.gcp-sa-key.json
+      DEPLOY_DIR: /scratch/a56/${{ secrets.USER_NAME }}/ci/absconda/run-${{ github.run_id }}
+      SA_KEY_PATH: /scratch/a56/${{ secrets.USER_NAME }}/ci/absconda/run-${{ github.run_id }}/.gcp-sa-key.json
 
     steps:
       # --- Checkout repo on NCI to get env file ---
@@ -32,7 +32,7 @@ jobs:
         run: |
           qx --queue copyq \
             --execdir "$DEPLOY_DIR" \
-            -- bash -c "echo '${{ secrets.GCP_SA_KEY }}' > '${{ env.SA_KEY_PATH }}' && chmod 600 '${{ env.SA_KEY_PATH }}'"
+            -- bash -c "echo '${{ secrets.SERVICE_ACCOUNT }}' > '${{ env.SA_KEY_PATH }}' && chmod 600 '${{ env.SA_KEY_PATH }}'"
 
       - name: Activate service account
         run: |

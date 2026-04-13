@@ -6,82 +6,73 @@ on:
     branches: [main]
 
 jobs:
-  deploy:
+  publish:
     if: github.event.pull_request.merged == true
     runs-on: [self-hosted, qxub-runner]
     permissions:
       contents: read
 
     env:
-      NCI_USER: ${{ secrets.USER_NAME }}
-      NCI_PROJECT: a56
-      DEPLOY_DIR: /scratch/a56/${{ secrets.USER_NAME }}/ci/absconda/run-${{ github.run_id }}
-      SA_KEY_PATH: /scratch/a56/${{ secrets.USER_NAME }}/ci/absconda/run-${{ github.run_id }}/.gcp-sa-key.json
+      GCP_PROJECT: ctp-archive
+      GCP_ZONE: australia-southeast1-a
+      BUILDER_VM: absconda-builder
 
     steps:
-      # --- Checkout repo on NCI to get env file ---
-      - name: Clone repository to NCI
-        run: |
-          qxub exec \
-            --queue copyq \
-            --create-execdir \
-            --execdir "$DEPLOY_DIR" \
-            -- git clone --depth 1 git@github.com:${{ github.repository }}.git .
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # --- Set up GCP auth on NCI ---
-      - name: Write GCP service account key
+      - name: Authenticate gcloud
         run: |
-          qxub exec \
-            --queue copyq \
-            --execdir "$DEPLOY_DIR" \
-            -- bash -c "echo '${{ secrets.SERVICE_ACCOUNT }}' > '${{ env.SA_KEY_PATH }}' && chmod 600 '${{ env.SA_KEY_PATH }}'"
+          echo '${{ secrets.SERVICE_ACCOUNT }}' > /tmp/gcp-sa-key.json
+          gcloud auth activate-service-account \
+            --key-file=/tmp/gcp-sa-key.json \
+            --project=$GCP_PROJECT
+          rm -f /tmp/gcp-sa-key.json
 
-      - name: Activate service account
+      - name: Start builder VM
         run: |
-          qxub exec \
-            --queue copyq \
-            --execdir "$DEPLOY_DIR" \
-            -- gcloud auth activate-service-account \
-              --key-file="${{ env.SA_KEY_PATH }}" \
-              --project=ctp-archive
+          gcloud compute instances start $BUILDER_VM \
+            --zone=$GCP_ZONE --project=$GCP_PROJECT
 
-      # --- Build, push, pull, wrap, and install module ---
-      - name: Publish and deploy
+      - name: Upload build context
         run: |
-          qxub exec \
-            --queue normal \
-            --mem 8GB \
-            --cpus 4 \
-            --runtime 1h \
-            --volumes "gdata/a56" \
-            --execdir "$DEPLOY_DIR" \
-            -- absconda deploy \
-              --file examples/absconda-env.yaml \
-              --commands absconda,gcloud \
-              --shims pbs,singularity \
-              --remote-builder gcp-builder \
-              --remote-off
+          tar -czf /tmp/context.tar.gz --exclude=.git .
+          gcloud compute scp /tmp/context.tar.gz \
+            $BUILDER_VM:/var/lib/absconda/context.tar.gz \
+            --zone=$GCP_ZONE --project=$GCP_PROJECT \
+            --tunnel-through-iap
+          rm -f /tmp/context.tar.gz
 
-      # --- Cleanup ---
-      - name: Remove service account key
+      - name: Build and push image
+        run: |
+          IMAGE_REF="ghcr.io/swarbricklab/absconda:$(date +%Y%m%d)"
+          gcloud compute ssh $BUILDER_VM \
+            --zone=$GCP_ZONE --project=$GCP_PROJECT \
+            --tunnel-through-iap \
+            --command="mkdir -p /var/lib/absconda/build && \
+              tar -xzf /var/lib/absconda/context.tar.gz -C /var/lib/absconda/build && \
+              cd /var/lib/absconda/build && \
+              DOCKER_BUILDKIT=1 docker build -t ${IMAGE_REF} . && \
+              gcloud secrets versions access latest --secret=absconda-github-token | \
+                docker login ghcr.io -u \$(gcloud secrets versions access latest --secret=absconda-github-username) --password-stdin && \
+              docker push ${IMAGE_REF} && \
+              docker logout ghcr.io"
+
+      - name: Cleanup builder
         if: always()
         run: |
-          qxub exec \
-            --queue copyq \
-            --execdir "$DEPLOY_DIR" \
-            -- rm -f "${{ env.SA_KEY_PATH }}"
+          gcloud compute ssh $BUILDER_VM \
+            --zone=$GCP_ZONE --project=$GCP_PROJECT \
+            --tunnel-through-iap \
+            --command="rm -rf /var/lib/absconda/build /var/lib/absconda/context.tar.gz" || true
 
-      - name: Revoke service account credentials
+      - name: Stop builder VM
         if: always()
         run: |
-          qxub exec \
-            --queue copyq \
-            --execdir "$DEPLOY_DIR" \
-            -- gcloud auth revoke --all --quiet || true
+          gcloud compute instances stop $BUILDER_VM \
+            --zone=$GCP_ZONE --project=$GCP_PROJECT || true
 
-      - name: Clean up working directory
+      - name: Revoke gcloud credentials
         if: always()
         run: |
-          qxub exec \
-            --queue copyq \
-            -- rm -rf "$DEPLOY_DIR"
+          gcloud auth revoke --all --quiet || true

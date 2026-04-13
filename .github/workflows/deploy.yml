@@ -1,0 +1,80 @@
+name: Deploy to NCI
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: github.event.pull_request.merged == true
+    runs-on: [self-hosted, qxub-runner]
+    permissions:
+      contents: read
+
+    env:
+      NCI_USER: ${{ secrets.USER_NAME }}
+      NCI_PROJECT: a56
+      DEPLOY_DIR: /scratch/a56/${{ secrets.USER_NAME }}/ci/absconda/run-${{ github.run_id }}
+      SA_KEY_PATH: /scratch/a56/${{ secrets.USER_NAME }}/ci/absconda/run-${{ github.run_id }}/.gcp-sa-key.json
+
+    steps:
+      # --- Checkout repo on NCI to get env file ---
+      - name: Clone repository to NCI
+        run: |
+          qx --queue copyq \
+            --create-execdir \
+            --execdir "$DEPLOY_DIR" \
+            -- git clone --depth 1 git@github.com:${{ github.repository }}.git .
+
+      # --- Set up GCP auth on NCI ---
+      - name: Write GCP service account key
+        run: |
+          qx --queue copyq \
+            --execdir "$DEPLOY_DIR" \
+            -- bash -c "echo '${{ secrets.SERVICE_ACCOUNT }}' > '${{ env.SA_KEY_PATH }}' && chmod 600 '${{ env.SA_KEY_PATH }}'"
+
+      - name: Activate service account
+        run: |
+          qx --queue copyq \
+            --execdir "$DEPLOY_DIR" \
+            -- gcloud auth activate-service-account \
+              --key-file="${{ env.SA_KEY_PATH }}" \
+              --project=ctp-archive
+
+      # --- Build, push, pull, wrap, and install module ---
+      - name: Publish and deploy
+        run: |
+          qx --queue normal \
+            --mem 8GB \
+            --cpus 4 \
+            --runtime 1h \
+            --volumes "gdata/a56" \
+            --execdir "$DEPLOY_DIR" \
+            -- absconda deploy \
+              --file examples/absconda-env.yaml \
+              --commands absconda,gcloud \
+              --shims pbs,singularity \
+              --remote-builder gcp-builder \
+              --remote-off
+
+      # --- Cleanup ---
+      - name: Remove service account key
+        if: always()
+        run: |
+          qx --queue copyq \
+            --execdir "$DEPLOY_DIR" \
+            -- rm -f "${{ env.SA_KEY_PATH }}"
+
+      - name: Revoke service account credentials
+        if: always()
+        run: |
+          qx --queue copyq \
+            --execdir "$DEPLOY_DIR" \
+            -- gcloud auth revoke --all --quiet || true
+
+      - name: Clean up working directory
+        if: always()
+        run: |
+          qx --queue copyq \
+            -- rm -rf "$DEPLOY_DIR"

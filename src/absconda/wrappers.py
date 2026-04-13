@@ -122,9 +122,7 @@ def _resolve_shim_groups(shim_names: list[str]) -> None:
     unknown = [g for g in shim_names if g not in SHIM_GROUPS]
     if unknown:
         available = ", ".join(sorted(SHIM_GROUPS))
-        raise WrapperError(
-            f"Unknown shim group(s): {', '.join(unknown)}. Available: {available}"
-        )
+        raise WrapperError(f"Unknown shim group(s): {', '.join(unknown)}. Available: {available}")
 
 
 def generate_shims(
@@ -156,7 +154,8 @@ def generate_shims(
         # /lib64:/host-lib64:ro and /half-root:/half-root:ro — skip duplicates.
         if use_pbs_env:
             sing_binds = [
-                b for b in sing_binds
+                b
+                for b in sing_binds
                 if not b.startswith(f"{HOST_LIB64}:{HOST_LIB64_MOUNT}")
                 and not b.startswith("/half-root:/half-root")
             ]

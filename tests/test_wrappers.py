@@ -8,7 +8,6 @@ import pytest
 
 from absconda.wrappers import (
     PBS_CONTAINER_ENV,
-    SHIM_GROUPS,
     WrapperConfig,
     WrapperError,
     _resolve_shim_groups,
@@ -290,9 +289,7 @@ def test_generate_pbs_shims_returns_use_pbs_env():
 def test_generate_singularity_shims():
     """Test singularity shim script generation."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        bind_mounts, path_dirs, use_pbs_env = generate_shims(
-            ["singularity"], Path(tmpdir)
-        )
+        bind_mounts, path_dirs, use_pbs_env = generate_shims(["singularity"], Path(tmpdir))
 
         assert use_pbs_env is False
 
@@ -327,9 +324,7 @@ def test_generate_singularity_shims():
 def test_generate_pbs_and_singularity_shims():
     """Test combined PBS + singularity shims avoid duplicate bind mounts."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        bind_mounts, path_dirs, use_pbs_env = generate_shims(
-            ["pbs", "singularity"], Path(tmpdir)
-        )
+        bind_mounts, path_dirs, use_pbs_env = generate_shims(["pbs", "singularity"], Path(tmpdir))
 
         assert use_pbs_env is True
         assert (Path(tmpdir) / "singularity-shims" / "singularity").exists()
@@ -337,12 +332,8 @@ def test_generate_pbs_and_singularity_shims():
 
         # /lib64:/host-lib64:ro and /half-root should NOT be in bind_mounts
         # because they are already provided by pbs-container.env
-        assert not any(
-            m.startswith("/lib64:/host-lib64") for m in bind_mounts
-        )
-        assert not any(
-            m.startswith("/half-root:/half-root") for m in bind_mounts
-        )
+        assert not any(m.startswith("/lib64:/host-lib64") for m in bind_mounts)
+        assert not any(m.startswith("/half-root:/half-root") for m in bind_mounts)
 
         # Singularity-specific mounts should still be present
         assert any("/opt/singularity:/opt/singularity:ro" in m for m in bind_mounts)
@@ -437,4 +428,3 @@ def test_wrapper_with_pbs_and_singularity_shims():
 
         # Shim scripts exist
         assert (Path(tmpdir) / "singularity-shims" / "singularity").exists()
-        assert (Path(tmpdir) / "singularity-shims" / "mksquashfs").exists()

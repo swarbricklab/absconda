@@ -29,6 +29,19 @@ NO_HOME="--no-home"
 {% endif %}
 {% endfor %}
 
+{% if use_pbs_env %}
+# PBS shims (provides PBS_MOUNTS, PBS_PATH; includes /lib64:/host-lib64:ro)
+source {{ pbs_container_env }}
+MOUNTS+=("${PBS_MOUNTS[@]}")
+{% endif %}
+
+{% if shim_bind_mounts %}
+# Additional shim bind mounts
+{% for bind_spec in shim_bind_mounts %}
+MOUNTS+=("-B" "{{ bind_spec }}")
+{% endfor %}
+{% endif %}
+
 {% if gpu %}
 # GPU support
 GPU_FLAG="--nv"
@@ -38,8 +51,26 @@ GPU_FLAG=""
 
 {% if env_dir %}
 # Set PATH to include conda environment
-export SINGULARITYENV_PATH="{{ env_dir }}/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+{% set path_parts = [env_dir ~ "/bin", "/opt/conda/bin"] %}
+{% if use_pbs_env %}
+{% set _ = path_parts.append("${PBS_PATH}") %}
+{% endif %}
+{% for d in shim_path_dirs %}
+{% set _ = path_parts.append(d) %}
+{% endfor %}
+{% set _ = path_parts.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]) %}
+export SINGULARITYENV_PATH="{{ path_parts | join(':') }}"
 export SINGULARITYENV_CONDA_PREFIX="{{ env_dir }}"
+{% else %}
+{% set path_parts = ["/opt/conda/bin"] %}
+{% if use_pbs_env %}
+{% set _ = path_parts.append("${PBS_PATH}") %}
+{% endif %}
+{% for d in shim_path_dirs %}
+{% set _ = path_parts.append(d) %}
+{% endfor %}
+{% set _ = path_parts.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]) %}
+export SINGULARITYENV_PATH="{{ path_parts | join(':') }}"
 {% endif %}
 
 # Execute command in container

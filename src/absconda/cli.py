@@ -1237,6 +1237,7 @@ def _deploy_image(
     env: Optional[str],
     gpu: bool,
     env_dir: Optional[str],
+    shims: Optional[str],
     no_wrap: bool,
     no_module: bool,
 ) -> None:
@@ -1302,6 +1303,11 @@ def _deploy_image(
         if config.wrapper_env_passthrough:
             env_list = config.wrapper_env_passthrough + env_list
 
+        # Parse shim groups
+        shim_list = []
+        if shims:
+            shim_list = [s.strip() for s in shims.split(",") if s.strip()]
+
         wrapper_config = WrapperConfig(
             image_ref=image_ref,
             commands=command_list,
@@ -1312,6 +1318,7 @@ def _deploy_image(
             env_passthrough=env_list,
             gpu=gpu,
             env_dir=env_dir,
+            shims=shim_list,
         )
 
         try:
@@ -1430,6 +1437,14 @@ def deploy(
         False,
         "--no-module",
         help="Skip module file generation.",
+    ),
+    shims: Optional[str] = typer.Option(
+        None,
+        "--shims",
+        help=(
+            "Comma-separated shim groups to inject (e.g., pbs,singularity). "
+            "Generates host-command pass-through scripts alongside wrappers."
+        ),
     ),
     # --- Build flags (used when --file is provided to build first) ---
     file: Optional[Path] = typer.Option(
@@ -1587,6 +1602,7 @@ def deploy(
         env=env,
         gpu=gpu,
         env_dir=env_dir,
+        shims=shims,
         no_wrap=no_wrap,
         no_module=no_module,
     )
@@ -1856,6 +1872,14 @@ def wrap(
             "(e.g., /opt/conda/envs/myenv). Required for Singularity PATH setup."
         ),
     ),
+    shims: Optional[str] = typer.Option(
+        None,
+        "--shims",
+        help=(
+            "Comma-separated shim groups to inject (e.g., pbs,singularity). "
+            "Generates host-command pass-through scripts alongside wrappers."
+        ),
+    ),
 ) -> None:
     """Generate wrapper scripts for running commands inside containers.
 
@@ -1908,6 +1932,11 @@ def wrap(
     if config.wrapper_env_passthrough:
         env_list = config.wrapper_env_passthrough + env_list
 
+    # Parse shim groups
+    shim_list = []
+    if shims:
+        shim_list = [s.strip() for s in shims.split(",") if s.strip()]
+
     # Create wrapper config
     wrapper_config = WrapperConfig(
         image_ref=image,
@@ -1919,6 +1948,7 @@ def wrap(
         env_passthrough=env_list,
         gpu=gpu,
         env_dir=env_dir,
+        shims=shim_list,
     )
 
     # Generate wrappers

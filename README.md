@@ -237,7 +237,7 @@ The result: reproducible, optimized, compliant environments deployed consistentl
 
 Absconda is production-ready and actively maintained. It powers scientific computing workflows for research teams at the Garvan Institute and beyond.
 
-**Current version**: 0.1.0  
+**Current version**: 0.2.1  
 **Python support**: 3.11, 3.12, 3.13+  
 **License**: MIT
 
@@ -276,4 +276,3 @@ MIT License - see [LICENSE](LICENSE) for details.
 **Ready to get started?** → [Installation Guide](docs/getting-started/installation.md)
 
 **Have questions?** → [GitHub Discussions](https://github.com/swarbricklab/absconda/discussions)
-

@@ -22,8 +22,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Authenticate gcloud
+        env:
+          GCP_SA_KEY: ${{ secrets.SERVICE_ACCOUNT }}
         run: |
-          echo '${{ secrets.SERVICE_ACCOUNT }}' > /tmp/gcp-sa-key.json
+          printenv GCP_SA_KEY > /tmp/gcp-sa-key.json
           gcloud auth activate-service-account \
             --key-file=/tmp/gcp-sa-key.json \
             --project=$GCP_PROJECT

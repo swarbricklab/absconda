@@ -22,7 +22,8 @@ jobs:
       # --- Checkout repo on NCI to get env file ---
       - name: Clone repository to NCI
         run: |
-          qx --queue copyq \
+          qxub exec \
+            --queue copyq \
             --create-execdir \
             --execdir "$DEPLOY_DIR" \
             -- git clone --depth 1 git@github.com:${{ github.repository }}.git .
@@ -30,13 +31,15 @@ jobs:
       # --- Set up GCP auth on NCI ---
       - name: Write GCP service account key
         run: |
-          qx --queue copyq \
+          qxub exec \
+            --queue copyq \
             --execdir "$DEPLOY_DIR" \
             -- bash -c "echo '${{ secrets.SERVICE_ACCOUNT }}' > '${{ env.SA_KEY_PATH }}' && chmod 600 '${{ env.SA_KEY_PATH }}'"
 
       - name: Activate service account
         run: |
-          qx --queue copyq \
+          qxub exec \
+            --queue copyq \
             --execdir "$DEPLOY_DIR" \
             -- gcloud auth activate-service-account \
               --key-file="${{ env.SA_KEY_PATH }}" \
@@ -45,7 +48,8 @@ jobs:
       # --- Build, push, pull, wrap, and install module ---
       - name: Publish and deploy
         run: |
-          qx --queue normal \
+          qxub exec \
+            --queue normal \
             --mem 8GB \
             --cpus 4 \
             --runtime 1h \
@@ -62,19 +66,22 @@ jobs:
       - name: Remove service account key
         if: always()
         run: |
-          qx --queue copyq \
+          qxub exec \
+            --queue copyq \
             --execdir "$DEPLOY_DIR" \
             -- rm -f "${{ env.SA_KEY_PATH }}"
 
       - name: Revoke service account credentials
         if: always()
         run: |
-          qx --queue copyq \
+          qxub exec \
+            --queue copyq \
             --execdir "$DEPLOY_DIR" \
             -- gcloud auth revoke --all --quiet || true
 
       - name: Clean up working directory
         if: always()
         run: |
-          qx --queue copyq \
+          qxub exec \
+            --queue copyq \
             -- rm -rf "$DEPLOY_DIR"

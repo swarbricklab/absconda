@@ -7,10 +7,14 @@ from pathlib import Path
 import pytest
 
 from absconda.wrappers import (
+    PBS_CONTAINER_ENV,
+    SHIM_GROUPS,
     WrapperConfig,
     WrapperError,
+    _resolve_shim_groups,
     _sanitize_image_name,
     expand_mount_paths,
+    generate_shims,
     generate_wrappers,
 )
 
@@ -256,3 +260,181 @@ def test_invalid_runtime():
 
         with pytest.raises(WrapperError, match="Unsupported runtime"):
             generate_wrappers(config)
+
+
+# ---- Shim tests ----
+
+
+def test_resolve_unknown_shim_group_raises_error():
+    """Test that an unknown shim group raises WrapperError."""
+    with pytest.raises(WrapperError, match="Unknown shim group"):
+        _resolve_shim_groups(["nonexistent"])
+
+
+def test_generate_pbs_shims_returns_use_pbs_env():
+    """Test PBS shim group signals template to source pbs-container.env."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bind_mounts, path_dirs, use_pbs_env = generate_shims(["pbs"], Path(tmpdir))
+
+        # PBS does not create per-wrapper shim scripts
+        assert not (Path(tmpdir) / "pbs-shims").exists()
+
+        # No extra bind mounts or path dirs from PBS alone
+        assert bind_mounts == []
+        assert path_dirs == []
+
+        # Signals the template to source pbs-container.env
+        assert use_pbs_env is True
+
+
+def test_generate_singularity_shims():
+    """Test singularity shim script generation."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bind_mounts, path_dirs, use_pbs_env = generate_shims(
+            ["singularity"], Path(tmpdir)
+        )
+
+        assert use_pbs_env is False
+
+        shim_dir = Path(tmpdir) / "singularity-shims"
+        assert shim_dir.is_dir()
+
+        # singularity shim — direct exec (Go binary, no host-linker)
+        singularity_shim = shim_dir / "singularity"
+        assert singularity_shim.exists()
+        assert os.access(singularity_shim, os.X_OK)
+        content = singularity_shim.read_text()
+        assert "/opt/singularity/bin/singularity" in content
+        assert "ld-linux" not in content  # No host-linker for Go binary
+
+        # mksquashfs shim — host-linker pattern (C binary)
+        mksquashfs_shim = shim_dir / "mksquashfs"
+        assert mksquashfs_shim.exists()
+        content = mksquashfs_shim.read_text()
+        assert "ld-linux-x86-64.so.2" in content
+        assert "--library-path /host-lib64" in content
+        assert "/half-root/usr/sbin/mksquashfs" in content
+
+        # Bind mounts include host libs, singularity install, shim dir, and mksquashfs overlay
+        assert any("/lib64:/host-lib64:ro" in m for m in bind_mounts)
+        assert any("/opt/singularity:/opt/singularity:ro" in m for m in bind_mounts)
+        assert any("singularity-shims" in m for m in bind_mounts)
+        assert any("mksquashfs:/usr/sbin/mksquashfs:ro" in m for m in bind_mounts)
+
+        assert "/singularity-shims" in path_dirs
+
+
+def test_generate_pbs_and_singularity_shims():
+    """Test combined PBS + singularity shims avoid duplicate bind mounts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bind_mounts, path_dirs, use_pbs_env = generate_shims(
+            ["pbs", "singularity"], Path(tmpdir)
+        )
+
+        assert use_pbs_env is True
+        assert (Path(tmpdir) / "singularity-shims" / "singularity").exists()
+        assert (Path(tmpdir) / "singularity-shims" / "mksquashfs").exists()
+
+        # /lib64:/host-lib64:ro and /half-root should NOT be in bind_mounts
+        # because they are already provided by pbs-container.env
+        assert not any(
+            m.startswith("/lib64:/host-lib64") for m in bind_mounts
+        )
+        assert not any(
+            m.startswith("/half-root:/half-root") for m in bind_mounts
+        )
+
+        # Singularity-specific mounts should still be present
+        assert any("/opt/singularity:/opt/singularity:ro" in m for m in bind_mounts)
+        assert any("singularity-shims" in m for m in bind_mounts)
+        assert "/singularity-shims" in path_dirs
+
+
+def test_wrapper_with_pbs_shims():
+    """Test that --shims pbs sources pbs-container.env in wrapper scripts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = WrapperConfig(
+            image_ref="ghcr.io/test/image:1.0",
+            commands=["python"],
+            runtime="singularity",
+            output_dir=Path(tmpdir),
+            shims=["pbs"],
+        )
+
+        generate_wrappers(config)
+        content = (Path(tmpdir) / "python").read_text()
+
+        assert f"source {PBS_CONTAINER_ENV}" in content
+        assert "${PBS_MOUNTS[@]}" in content
+        assert "${PBS_PATH}" in content
+
+
+def test_wrapper_shims_with_env_dir():
+    """Test that shim PATH dirs are merged into SINGULARITYENV_PATH when env_dir is set."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = WrapperConfig(
+            image_ref="ghcr.io/test/image:1.0",
+            commands=["python"],
+            runtime="singularity",
+            output_dir=Path(tmpdir),
+            env_dir="/opt/conda/envs/myenv",
+            shims=["pbs"],
+        )
+
+        generate_wrappers(config)
+        content = (Path(tmpdir) / "python").read_text()
+
+        assert "SINGULARITYENV_PATH" in content
+        assert "/opt/conda/envs/myenv/bin" in content
+        assert "${PBS_PATH}" in content
+
+
+def test_wrapper_no_shims_no_bind_mounts():
+    """Test that without shims, no shim bind mounts appear."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = WrapperConfig(
+            image_ref="ghcr.io/test/image:1.0",
+            commands=["python"],
+            runtime="singularity",
+            output_dir=Path(tmpdir),
+        )
+
+        generate_wrappers(config)
+        content = (Path(tmpdir) / "python").read_text()
+
+        assert "pbs-container.env" not in content
+        assert "PBS_MOUNTS" not in content
+        assert "/host-lib64" not in content
+        assert "pbs-shims" not in content
+
+
+def test_wrapper_with_pbs_and_singularity_shims():
+    """Test wrapper with both PBS and singularity shims."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = WrapperConfig(
+            image_ref="ghcr.io/test/image:1.0",
+            commands=["myapp"],
+            runtime="singularity",
+            output_dir=Path(tmpdir),
+            shims=["pbs", "singularity"],
+        )
+
+        generate_wrappers(config)
+        content = (Path(tmpdir) / "myapp").read_text()
+
+        # PBS env sourced
+        assert f"source {PBS_CONTAINER_ENV}" in content
+        assert "${PBS_MOUNTS[@]}" in content
+
+        # Singularity shim bind mounts present
+        assert "/opt/singularity:/opt/singularity:ro" in content
+        assert "singularity-shims" in content
+        assert "mksquashfs:/usr/sbin/mksquashfs:ro" in content
+
+        # PATH includes both PBS and singularity shim dirs
+        assert "${PBS_PATH}" in content
+        assert "/singularity-shims" in content
+
+        # Shim scripts exist
+        assert (Path(tmpdir) / "singularity-shims" / "singularity").exists()
+        assert (Path(tmpdir) / "singularity-shims" / "mksquashfs").exists()

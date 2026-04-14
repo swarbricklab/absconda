@@ -17,6 +17,7 @@ jobs:
       GCP_PROJECT: ${{ secrets.PROJECT_ID }}
       GCP_ZONE: australia-southeast1-a
       BUILDER_VM: absconda-builder
+      REMOTE_DIR: /tmp/absconda-ci
 
     steps:
       - name: Checkout repository
@@ -57,7 +58,7 @@ jobs:
         run: |
           tar -czf /tmp/context.tar.gz --exclude=.git .
           gcloud compute scp /tmp/context.tar.gz \
-            $BUILDER_VM:/var/lib/absconda/context.tar.gz \
+            $BUILDER_VM:$REMOTE_DIR/context.tar.gz \
             --zone=$GCP_ZONE --project=$GCP_PROJECT \
             --tunnel-through-iap
           rm -f /tmp/context.tar.gz
@@ -68,14 +69,15 @@ jobs:
           gcloud compute ssh $BUILDER_VM \
             --zone=$GCP_ZONE --project=$GCP_PROJECT \
             --tunnel-through-iap \
-            --command="mkdir -p /var/lib/absconda/build && \
-              tar -xzf /var/lib/absconda/context.tar.gz -C /var/lib/absconda/build && \
-              cd /var/lib/absconda/build && \
-              DOCKER_BUILDKIT=1 docker build -t ${IMAGE_REF} . && \
-              gcloud secrets versions access latest --secret=absconda-github-token | \
-                docker login ghcr.io -u \$(gcloud secrets versions access latest --secret=absconda-github-username) --password-stdin && \
-              docker push ${IMAGE_REF} && \
-              docker logout ghcr.io"
+            --command="set -e && \
+              mkdir -p $REMOTE_DIR/build && \
+              tar -xzf $REMOTE_DIR/context.tar.gz -C $REMOTE_DIR/build && \
+              cd $REMOTE_DIR/build && \
+              sudo DOCKER_BUILDKIT=1 docker build -t ${IMAGE_REF} . && \
+              sudo gcloud secrets versions access latest --secret=absconda-github-token | \
+                sudo docker login ghcr.io -u \$(sudo gcloud secrets versions access latest --secret=absconda-github-username) --password-stdin && \
+              sudo docker push ${IMAGE_REF} && \
+              sudo docker logout ghcr.io"
 
       - name: Cleanup builder
         if: always()
@@ -83,7 +85,7 @@ jobs:
           gcloud compute ssh $BUILDER_VM \
             --zone=$GCP_ZONE --project=$GCP_PROJECT \
             --tunnel-through-iap \
-            --command="rm -rf /var/lib/absconda/build /var/lib/absconda/context.tar.gz" || true
+            --command="rm -rf $REMOTE_DIR" || true
 
       - name: Stop builder VM
         if: always()

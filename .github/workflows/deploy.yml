@@ -56,14 +56,8 @@ jobs:
 
       - name: Deploy to NCI
         run: |
-          ABSCONDA_BIN=$(which absconda)
           IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"
-
-          qx --mod singularity --mem 4GB --cpus 2 --runtime 30m -- \
-            "$ABSCONDA_BIN" deploy "$IMAGE_REF" \
-              --commands absconda,gcloud,ssh,git \
-              --runtime singularity \
-              --image-cache /apps/swarbricklab/sif-cache \
-              --output-dir "/apps/swarbricklab/wrappers/absconda-${IMAGE_TAG}" \
-              --module-dir /apps/swarbricklab/modulefiles \
+          qxub exec --mod absconda --mem 4GB --internet -- \
+            absconda deploy "$IMAGE_REF" \
+              --commands absconda,gcloud \
               --shims pbs,singularity

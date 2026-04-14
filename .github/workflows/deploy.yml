@@ -26,7 +26,7 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           service_account: ${{ secrets.SERVICE_ACCOUNT }}
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          workload_identity_provider: projects/${{ secrets.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/hpci-workload-identity-pool/providers/github-provider
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2

@@ -44,5 +44,6 @@ jobs:
         run: |
           absconda publish \
             --file examples/absconda-env.yaml \
+            --repository ghcr.io/swarbricklab/absconda \
             --remote-builder gcp-builder \
             --remote-off

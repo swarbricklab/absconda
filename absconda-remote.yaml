@@ -6,7 +6,7 @@ builders:
     host: absconda-builder
     # OS Login username (run: gcloud compute os-login describe-profile | grep username)
     # For first-time setup, use ${USER} and run: absconda remote init gcp-builder
-    user: j_reeves_garvan_org_au
+    user: ${GCP_OS_LOGIN_USER?}
     workspace: /var/lib/absconda
     ssh_key: ~/.ssh/google_compute_engine
     ssh_port: 22

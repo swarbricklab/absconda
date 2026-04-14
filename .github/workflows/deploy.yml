@@ -15,25 +15,31 @@ jobs:
 
     env:
       GCP_PROJECT: ${{ secrets.PROJECT_ID }}
+      GCP_ZONE: australia-southeast1-a
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to GCP (Workload Identity Federation)
         uses: google-github-actions/auth@v2
         with:
-          service_account: ${{ secrets.SERVICE_ACCOUNT }}
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
 
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve OS Login username
+        run: |
+          GCP_OS_LOGIN_USER=$(gcloud compute os-login describe-profile \
+            --format='value(posixAccounts[0].username)')
+          echo "GCP_OS_LOGIN_USER=$GCP_OS_LOGIN_USER" >> "$GITHUB_ENV"
 
       - name: Install absconda
         run: pip install .
 
-      - name: Publish image
+      - name: Publish image via remote builder
         run: |
           absconda publish \
             --file examples/absconda-env.yaml \
-            --remote-builder gcp-builder
+            --remote-builder gcp-builder \
+            --remote-off

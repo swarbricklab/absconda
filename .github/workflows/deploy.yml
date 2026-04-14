@@ -11,9 +11,10 @@ jobs:
     runs-on: [self-hosted, qxub-runner]
     permissions:
       contents: read
+      id-token: write
 
     env:
-      GCP_PROJECT: ctp-archive
+      GCP_PROJECT: ${{ secrets.PROJECT_ID }}
       GCP_ZONE: australia-southeast1-a
       BUILDER_VM: absconda-builder
 
@@ -21,15 +22,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Authenticate gcloud
-        env:
-          GCP_SA_KEY: ${{ secrets.SERVICE_ACCOUNT }}
-        run: |
-          printenv GCP_SA_KEY > /tmp/gcp-sa-key.json
-          gcloud auth activate-service-account \
-            --key-file=/tmp/gcp-sa-key.json \
-            --project=$GCP_PROJECT
-          rm -f /tmp/gcp-sa-key.json
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
 
       - name: Start builder VM
         run: |

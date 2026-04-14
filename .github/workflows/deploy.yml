@@ -22,6 +22,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify secrets are available
+        env:
+          PROJECT_ID: ${{ secrets.PROJECT_ID }}
+          PROJECT_NUMBER: ${{ secrets.PROJECT_NUMBER }}
+          SERVICE_ACCOUNT: ${{ secrets.SERVICE_ACCOUNT }}
+          WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+        run: |
+          echo "PROJECT_ID length: ${#PROJECT_ID}"
+          echo "PROJECT_NUMBER length: ${#PROJECT_NUMBER}"
+          echo "SERVICE_ACCOUNT length: ${#SERVICE_ACCOUNT}"
+          echo "WIF_PROVIDER length: ${#WIF_PROVIDER}"
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

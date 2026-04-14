@@ -7,7 +7,7 @@ builders:
     # OS Login username (run: gcloud compute os-login describe-profile | grep username)
     # For first-time setup, use ${USER} and run: absconda remote init gcp-builder
     user: ${GCP_OS_LOGIN_USER?}
-    workspace: /var/lib/absconda
+    workspace: /tmp/absconda
     ssh_key: ~/.ssh/google_compute_engine
     ssh_port: 22
     # SSH via Identity-Aware Proxy (IAP) - use full gcloud.py path

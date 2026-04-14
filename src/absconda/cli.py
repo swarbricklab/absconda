@@ -205,7 +205,7 @@ def _slugify(value: str) -> str:
 
 
 def _date_stamp() -> str:
-    return datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 
 
 def _resolve_repository(repository: Optional[str], env_name: str) -> str:
@@ -412,7 +412,8 @@ def _build_image_remote(
         "absconda_version": __version__,
         "env_name": env_name,
         "image": image_ref,
-        "generated_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        + "Z",
         "policy_profile": policy_resolution.profile.name,
         "channels": report.env.channels if report is not None and report.env else [],
         "remote_builder": remote_options.builder,

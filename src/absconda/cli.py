@@ -205,7 +205,7 @@ def _slugify(value: str) -> str:
 
 
 def _date_stamp() -> str:
-    return datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 
 
 def _resolve_repository(repository: Optional[str], env_name: str) -> str:
@@ -412,7 +412,7 @@ def _build_image_remote(
         "absconda_version": __version__,
         "env_name": env_name,
         "image": image_ref,
-        "generated_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds") + "Z",
         "policy_profile": policy_resolution.profile.name,
         "channels": report.env.channels if report is not None and report.env else [],
         "remote_builder": remote_options.builder,
@@ -499,223 +499,199 @@ def _render_dockerfile(
         multi_stage=multi_stage,
         builder_base=builder_base,
         runtime_base=runtime_base,
-        template_path=template,
         renv_lock=renv_lock,
     )
 
     try:
-        return render_dockerfile(config)
+        return render_dockerfile(config, template_path=template)
     except TemplateRenderError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
 
+# ---------------------------------------------------------------------------
+# ─── generate ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
 @app.command()
 def generate(
+    ctx: typer.Context,
     file: Optional[Path] = typer.Option(
         None,
         "--file",
         "-f",
-        help=(
-            "Path to the Conda environment file "
-            "(required unless --tarball or --requirements is specified)."
-        ),
+        exists=True,
+        readable=True,
+        help="Path to environment.yaml file.",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
-        help="Path to a pre-packed conda tarball (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Path to a conda-pack tarball (.tar.gz) for offline/reproducible builds.",
     ),
     requirements: Optional[Path] = typer.Option(
         None,
         "--requirements",
         "-r",
-        help="Path to a pip requirements.txt file (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Path to a pip requirements.txt file.",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
         "--snapshot",
-        help="Optional snapshot generated via 'conda env export'.",
+        "-s",
+        exists=True,
+        readable=True,
+        help="Path to a snapshot YAML (optional lock file) for reproducible rebuilds.",
+    ),
+    template: Optional[Path] = typer.Option(
+        None,
+        "--template",
+        exists=True,
+        readable=True,
+        help="Path to a custom Jinja2 Dockerfile template.",
+    ),
+    builder_base: Optional[str] = typer.Option(
+        None,
+        "--builder-base",
+        help="Override the multi-stage builder base image.",
+    ),
+    runtime_base: Optional[str] = typer.Option(
+        None,
+        "--runtime-base",
+        help="Override the runtime base image.",
+    ),
+    multi_stage: Optional[bool] = typer.Option(
+        None,
+        "--multi-stage / --single-stage",
+        help="Force multi-stage or single-stage mode.",
     ),
     output: Optional[Path] = typer.Option(
         None,
         "--output",
         "-o",
-        help="Optional path to write the rendered Dockerfile (stdout if omitted).",
-    ),
-    template: Optional[Path] = typer.Option(
-        None,
-        "--template",
-        help="Path to a custom template file (defaults to Absconda's built-in template).",
-    ),
-    builder_base: Optional[str] = typer.Option(
-        None,
-        "--builder-base",
-        help="Override the builder stage base image.",
-    ),
-    runtime_base: Optional[str] = typer.Option(
-        None,
-        "--runtime-base",
-        help="Override the runtime stage base image.",
-    ),
-    multi_stage: Optional[bool] = typer.Option(
-        None,
-        "--multi-stage/--single-stage",
-        help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
+        help="Write the generated Dockerfile to this path instead of stdout.",
     ),
     renv_lock: Optional[Path] = typer.Option(
         None,
         "--renv-lock",
-        help="Path to an renv.lock file to restore alongside the Conda environment.",
+        exists=True,
+        readable=True,
+        help="Path to an renv.lock file to embed in the container.",
     ),
 ) -> None:
-    """Generate a Dockerfile from the provided environment file, tarball, or requirements."""
-
+    """Generate a Dockerfile from a Conda environment file."""
     _print_policy_banner()
-
-    # Provide default for file if no input is specified
-    if file is None and tarball is None and requirements is None:
-        file = Path("env.yaml")
 
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
-    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-    dockerfile = _render_dockerfile(
+
+    renv_lock_content = _read_optional_text_file(renv_lock, "renv.lock")
+
+    text = _render_dockerfile(
         report,
         template=template,
         builder_override=builder_base,
         runtime_override=runtime_base,
         multi_stage_override=multi_stage,
-        renv_lock=renv_lock_text,
+        renv_lock=renv_lock_content,
     )
 
     if output is not None:
-        output.write_text(dockerfile, encoding="utf-8")
-        console.print(f"[green]Dockerfile written to[/green] {output}.")
+        output.write_text(text, encoding="utf-8")
+        console.print(f"Wrote Dockerfile to {output}")
     else:
-        console.print(dockerfile, highlight=False, markup=False, soft_wrap=False)
+        console.print(text, highlight=False)
 
 
-@app.command()
-def validate(
-    file: Optional[Path] = typer.Option(
-        None,
-        "--file",
-        "-f",
-        help=(
-            "Environment file to validate "
-            "(required unless --tarball or --requirements is specified)."
-        ),
-    ),
-    tarball: Optional[Path] = typer.Option(
-        None,
-        "--tarball",
-        "-t",
-        help="Path to a pre-packed conda tarball (alternative to --file).",
-    ),
-    requirements: Optional[Path] = typer.Option(
-        None,
-        "--requirements",
-        "-r",
-        help="Path to a pip requirements.txt file (alternative to --file).",
-    ),
-    snapshot: Optional[Path] = typer.Option(
-        None,
-        "--snapshot",
-        help="Optional snapshot generated via 'conda env export'.",
-    ),
-) -> None:
-    """Validate the environment and snapshot files without generating output."""
-
-    _print_policy_banner()
-
-    # Provide default for file if no input is specified
-    if file is None and tarball is None and requirements is None:
-        file = Path("env.yaml")
-
-    report = _load_with_feedback(file, tarball, requirements, snapshot)
-    _enforce_policy_constraints(report)
-
-    if report.tarball:
-        console.print(f"Tarball [green]{report.env_name}[/green] is valid.")
-    else:
-        console.print(
-            f"Environment [green]{report.env_name}[/green] is valid with "
-            f"{len(report.env.dependencies) if report.env else 0} dependency entries."  # type: ignore[union-attr]
-        )
-    _print_warnings(report)
+# ---------------------------------------------------------------------------
+# ─── build ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 @app.command()
 def build(
-    repository: Optional[str] = typer.Option(
-        None,
-        "--repository",
-        help="Target OCI repository. Defaults to '<registry>/<org>/<env-name>' from config.",
-    ),
-    tag: Optional[str] = typer.Option(
-        None,
-        "--tag",
-        help="Optional image tag. Defaults to 'YYYYMMDD'.",
-    ),
+    ctx: typer.Context,
     file: Optional[Path] = typer.Option(
         None,
         "--file",
         "-f",
-        help=(
-            "Path to the Conda environment file "
-            "(required unless --tarball or --requirements is specified)."
-        ),
+        exists=True,
+        readable=True,
+        help="Path to environment.yaml file.",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
-        help="Path to a pre-packed conda tarball (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Use a conda-pack tarball (.tar.gz) for offline/reproducible builds.",
     ),
     requirements: Optional[Path] = typer.Option(
         None,
         "--requirements",
         "-r",
-        help="Path to a pip requirements.txt file (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Path to a pip requirements.txt file.",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
         "--snapshot",
-        help="Optional snapshot generated via 'conda env export'.",
+        "-s",
+        exists=True,
+        readable=True,
+        help="Path to a snapshot YAML (optional lock file) for reproducible rebuilds.",
     ),
     template: Optional[Path] = typer.Option(
         None,
         "--template",
-        help="Path to a custom template file (defaults to Absconda's built-in template).",
+        exists=True,
+        readable=True,
+        help="Path to a custom Jinja2 Dockerfile template.",
+    ),
+    repository: Optional[str] = typer.Option(
+        None,
+        "--repository",
+        help="Full repository reference, e.g. ghcr.io/org/name.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Image tag (default: YYYYMMDD date stamp).",
     ),
     builder_base: Optional[str] = typer.Option(
         None,
         "--builder-base",
-        help="Override the builder stage base image.",
+        help="Override the multi-stage builder base image.",
     ),
     runtime_base: Optional[str] = typer.Option(
         None,
         "--runtime-base",
-        help="Override the runtime stage base image.",
+        help="Override the runtime base image.",
     ),
     multi_stage: Optional[bool] = typer.Option(
         None,
-        "--multi-stage/--single-stage",
-        help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
+        "--multi-stage / --single-stage",
+        help="Force multi-stage or single-stage mode.",
     ),
     context: Path = typer.Option(
-        Path("."),
+        ".",
         "--context",
+        "-C",
         help="Docker build context directory.",
     ),
-    push: bool = typer.Option(False, "--push", help="Push the image after a successful build."),
-    renv_lock: Optional[Path] = typer.Option(
-        None,
-        "--renv-lock",
-        help="Path to an renv.lock file to restore alongside the Conda environment.",
+    push: bool = typer.Option(
+        False,
+        "--push",
+        help="Push the built image to the registry.",
     ),
     remote_builder: Optional[str] = typer.Option(
         None,
@@ -730,110 +706,56 @@ def build(
     remote_wait: int = typer.Option(
         900,
         "--remote-wait",
-        help="Seconds to wait for a busy remote builder before failing.",
+        help="Max seconds to wait for remote builder lock.",
     ),
     remote_off: bool = typer.Option(
         False,
         "--remote-off",
-        help="Stop the remote builder after the run (requires stop_command).",
+        help="Shut down the remote builder after this build.",
+    ),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        exists=True,
+        readable=True,
+        help="Path to an renv.lock file to embed in the container.",
     ),
     dockerfile: Optional[Path] = typer.Option(
         None,
         "--dockerfile",
-        help="Path to a pre-existing Dockerfile to use (skips generation).",
+        "-d",
+        exists=True,
+        readable=True,
+        help="Path to a pre-written Dockerfile (skips generation).",
     ),
     build_arg: Optional[list[str]] = typer.Option(
         None,
         "--build-arg",
-        help="Docker build argument (KEY=VALUE). Can be repeated.",
+        help="Pass a build-time variable (KEY=VALUE). May be specified multiple times.",
     ),
 ) -> None:
-    """Render a Dockerfile and build the container image."""
-
+    """Build a container image from a Conda environment file."""
     _print_policy_banner()
 
-    # Handle --dockerfile mode: use pre-existing Dockerfile
+    dockerfile_override: Optional[str] = None
+    report: Optional[LoadReport] = None
     if dockerfile is not None:
-        dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
-        if dockerfile_text is None:
-            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+        dockerfile_override = dockerfile.read_text(encoding="utf-8")
+        if repository is None:
+            console.print(
+                "[red]Error:[/red] --repository is required when using --dockerfile "
+                "(no environment file to derive a name from)."
+            )
             raise typer.Exit(code=1)
+        env_name = repository.rsplit("/", 1)[-1].split(":")[0]
+    else:
+        report = _load_with_feedback(file, tarball, requirements, snapshot)
+        _print_warnings(report)
+        _enforce_policy_constraints(report)
+        env_name = report.env_name
 
-        # When using --dockerfile without an env file, repository is required
-        if file is None and tarball is None and requirements is None:
-            if repository is None:
-                console.print(
-                    "[red]Error:[/red] --repository is required when using --dockerfile "
-                    "without an environment file."
-                )
-                raise typer.Exit(code=1)
-            report = None
-            resolved_repository = repository
-            env_name = _slugify(Path(repository).name)  # derive from repo name
-        else:
-            # Load environment for metadata/env_name but use provided dockerfile
-            report = _load_with_feedback(file, tarball, requirements, snapshot)
-            _print_warnings(report)
-            _enforce_policy_constraints(report)
-            resolved_repository = _resolve_repository(repository, report.env_name)
-            env_name = report.env_name
-
-        remote_opts = _resolve_remote_options(
-            remote_builder, remote_config, remote_wait, remote_off
-        )
-
-        if remote_opts:
-            image_ref = _build_image_remote(
-                report,
-                repository=resolved_repository,
-                tag=tag,
-                env_name=env_name,
-                template=template,
-                builder_override=builder_base,
-                runtime_override=runtime_base,
-                multi_stage_override=multi_stage,
-                context=context,
-                push=push,
-                renv_lock=None,
-                remote_options=remote_opts,
-                dockerfile_override=dockerfile_text,
-                build_args=build_arg,
-            )
-        else:
-            image_ref = _build_image_local(
-                report,
-                repository=resolved_repository,
-                tag=tag,
-                env_name=env_name,
-                template=template,
-                builder_override=builder_base,
-                runtime_override=runtime_base,
-                multi_stage_override=multi_stage,
-                context=context,
-                push=push,
-                renv_lock=None,
-                dockerfile_override=dockerfile_text,
-                build_args=build_arg,
-            )
-
-        console.print(f"[green]Image built:[/green] {image_ref}")
-        if push:
-            console.print(f"[green]Image pushed:[/green] {image_ref}")
-        return
-
-    # Standard mode: generate Dockerfile from environment file
-    # Provide default for file if neither file, tarball, nor requirements is specified
-    if file is None and tarball is None and requirements is None:
-        file = Path("env.yaml")
-
-    report = _load_with_feedback(file, tarball, requirements, snapshot)
-    _print_warnings(report)
-    _enforce_policy_constraints(report)
-    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-
-    # Resolve repository with defaults from config
-    resolved_repository = _resolve_repository(repository, report.env_name)
-
+    resolved_repository = _resolve_repository(repository, env_name)
+    renv_lock_content = _read_optional_text_file(renv_lock, "renv.lock")
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
     if remote_opts:
@@ -841,15 +763,16 @@ def build(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
             multi_stage_override=multi_stage,
             context=context,
             push=push,
-            renv_lock=renv_lock_text,
+            renv_lock=renv_lock_content,
             remote_options=remote_opts,
+            dockerfile_override=dockerfile_override,
             build_args=build_arg,
         )
     else:
@@ -857,89 +780,98 @@ def build(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
             multi_stage_override=multi_stage,
             context=context,
             push=push,
-            renv_lock=renv_lock_text,
+            renv_lock=renv_lock_content,
+            dockerfile_override=dockerfile_override,
             build_args=build_arg,
         )
 
-    console.print(f"[green]Image built:[/green] {image_ref}")
-    if push:
-        console.print(f"[green]Image pushed:[/green] {image_ref}")
+    console.print(f"[green]Built image:[/green] {image_ref}")
+
+
+# ---------------------------------------------------------------------------
+# ─── publish ────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 @app.command()
 def publish(
-    repository: Optional[str] = typer.Option(
-        None,
-        "--repository",
-        help="Target OCI repository. Defaults to '<registry>/<org>/<env-name>' from config.",
-    ),
-    tag: Optional[str] = typer.Option(
-        None,
-        "--tag",
-        help="Optional image tag. Defaults to 'YYYYMMDD'.",
-    ),
+    ctx: typer.Context,
     file: Optional[Path] = typer.Option(
         None,
         "--file",
         "-f",
-        help=(
-            "Path to the Conda environment file "
-            "(required unless --tarball or --requirements is specified)."
-        ),
+        exists=True,
+        readable=True,
+        help="Path to environment.yaml file.",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
-        help="Path to a pre-packed conda tarball (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Use a conda-pack tarball (.tar.gz) for offline/reproducible builds.",
     ),
     requirements: Optional[Path] = typer.Option(
         None,
         "--requirements",
         "-r",
-        help="Path to a pip requirements.txt file (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Path to a pip requirements.txt file.",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
         "--snapshot",
-        help="Optional snapshot generated via 'conda env export'.",
+        "-s",
+        exists=True,
+        readable=True,
+        help="Path to a snapshot YAML (optional lock file) for reproducible rebuilds.",
     ),
     template: Optional[Path] = typer.Option(
         None,
         "--template",
-        help="Path to a custom template file (defaults to Absconda's built-in template).",
+        exists=True,
+        readable=True,
+        help="Path to a custom Jinja2 Dockerfile template.",
+    ),
+    repository: Optional[str] = typer.Option(
+        None,
+        "--repository",
+        help="Full repository reference, e.g. ghcr.io/org/name.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Image tag (default: YYYYMMDD date stamp).",
     ),
     builder_base: Optional[str] = typer.Option(
         None,
         "--builder-base",
-        help="Override the builder stage base image.",
+        help="Override the multi-stage builder base image.",
     ),
     runtime_base: Optional[str] = typer.Option(
         None,
         "--runtime-base",
-        help="Override the runtime stage base image.",
+        help="Override the runtime base image.",
     ),
     multi_stage: Optional[bool] = typer.Option(
         None,
-        "--multi-stage/--single-stage",
-        help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
+        "--multi-stage / --single-stage",
+        help="Force multi-stage or single-stage mode.",
     ),
     context: Path = typer.Option(
-        Path("."),
+        ".",
         "--context",
+        "-C",
         help="Docker build context directory.",
-    ),
-    renv_lock: Optional[Path] = typer.Option(
-        None,
-        "--renv-lock",
-        help="Path to an renv.lock file to restore alongside the Conda environment.",
     ),
     remote_builder: Optional[str] = typer.Option(
         None,
@@ -954,108 +886,56 @@ def publish(
     remote_wait: int = typer.Option(
         900,
         "--remote-wait",
-        help="Seconds to wait for a busy remote builder before failing.",
+        help="Max seconds to wait for remote builder lock.",
     ),
     remote_off: bool = typer.Option(
         False,
         "--remote-off",
-        help="Stop the remote builder after the run (requires stop_command).",
+        help="Shut down the remote builder after this build.",
+    ),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        exists=True,
+        readable=True,
+        help="Path to an renv.lock file to embed in the container.",
     ),
     dockerfile: Optional[Path] = typer.Option(
         None,
         "--dockerfile",
-        help="Path to a pre-existing Dockerfile to use (skips generation).",
+        "-d",
+        exists=True,
+        readable=True,
+        help="Path to a pre-written Dockerfile (skips generation).",
     ),
     build_arg: Optional[list[str]] = typer.Option(
         None,
         "--build-arg",
-        help="Docker build argument (KEY=VALUE). Can be repeated.",
+        help="Pass a build-time variable (KEY=VALUE). May be specified multiple times.",
     ),
 ) -> None:
-    """Build a container image and push it to a registry."""
-
+    """Build and push a container image (convenience wrapper around build --push)."""
     _print_policy_banner()
 
-    # Handle --dockerfile mode: use pre-existing Dockerfile
+    dockerfile_override: Optional[str] = None
+    report: Optional[LoadReport] = None
     if dockerfile is not None:
-        dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
-        if dockerfile_text is None:
-            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+        dockerfile_override = dockerfile.read_text(encoding="utf-8")
+        if repository is None:
+            console.print(
+                "[red]Error:[/red] --repository is required when using --dockerfile "
+                "(no environment file to derive a name from)."
+            )
             raise typer.Exit(code=1)
+        env_name = repository.rsplit("/", 1)[-1].split(":")[0]
+    else:
+        report = _load_with_feedback(file, tarball, requirements, snapshot)
+        _print_warnings(report)
+        _enforce_policy_constraints(report)
+        env_name = report.env_name
 
-        # When using --dockerfile without an env file, repository is required
-        if file is None and tarball is None and requirements is None:
-            if repository is None:
-                console.print(
-                    "[red]Error:[/red] --repository is required when using --dockerfile "
-                    "without an environment file."
-                )
-                raise typer.Exit(code=1)
-            report = None
-            resolved_repository = repository
-            env_name = _slugify(Path(repository).name)  # derive from repo name
-        else:
-            # Load environment for metadata/env_name but use provided dockerfile
-            report = _load_with_feedback(file, tarball, requirements, snapshot)
-            _print_warnings(report)
-            _enforce_policy_constraints(report)
-            resolved_repository = _resolve_repository(repository, report.env_name)
-            env_name = report.env_name
-
-        remote_opts = _resolve_remote_options(
-            remote_builder, remote_config, remote_wait, remote_off
-        )
-
-        if remote_opts:
-            image_ref = _build_image_remote(
-                report,
-                repository=resolved_repository,
-                tag=tag,
-                env_name=env_name,
-                template=template,
-                builder_override=builder_base,
-                runtime_override=runtime_base,
-                multi_stage_override=multi_stage,
-                context=context,
-                push=True,
-                renv_lock=None,
-                remote_options=remote_opts,
-                dockerfile_override=dockerfile_text,
-                build_args=build_arg,
-            )
-        else:
-            image_ref = _build_image_local(
-                report,
-                repository=resolved_repository,
-                tag=tag,
-                env_name=env_name,
-                template=template,
-                builder_override=builder_base,
-                runtime_override=runtime_base,
-                multi_stage_override=multi_stage,
-                context=context,
-                push=True,
-                renv_lock=None,
-                dockerfile_override=dockerfile_text,
-                build_args=build_arg,
-            )
-
-        console.print(f"[green]Image pushed:[/green] {image_ref}")
-        return
-
-    # Standard mode: generate Dockerfile from environment file
-    # Provide default for file if neither file, tarball, nor requirements is specified
-    if file is None and tarball is None and requirements is None:
-        file = Path("env.yaml")
-
-    report = _load_with_feedback(file, tarball, requirements, snapshot)
-    _print_warnings(report)
-    _enforce_policy_constraints(report)
-    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-
-    # Resolve repository with defaults from config
-    resolved_repository = _resolve_repository(repository, report.env_name)
-
+    resolved_repository = _resolve_repository(repository, env_name)
+    renv_lock_content = _read_optional_text_file(renv_lock, "renv.lock")
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
     if remote_opts:
@@ -1063,15 +943,16 @@ def publish(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
             multi_stage_override=multi_stage,
             context=context,
             push=True,
-            renv_lock=renv_lock_text,
+            renv_lock=renv_lock_content,
             remote_options=remote_opts,
+            dockerfile_override=dockerfile_override,
             build_args=build_arg,
         )
     else:
@@ -1079,1200 +960,494 @@ def publish(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
             multi_stage_override=multi_stage,
             context=context,
             push=True,
-            renv_lock=renv_lock_text,
+            renv_lock=renv_lock_content,
+            dockerfile_override=dockerfile_override,
             build_args=build_arg,
         )
 
-    console.print(f"[green]Image pushed:[/green] {image_ref}")
+    console.print(f"[green]Published image:[/green] {image_ref}")
 
 
-def _publish_and_get_ref(
-    *,
-    file: Optional[Path],
-    tarball: Optional[Path],
-    requirements: Optional[Path],
-    snapshot: Optional[Path],
-    repository: Optional[str],
-    tag: Optional[str],
-    template: Optional[Path],
-    builder_base: Optional[str],
-    runtime_base: Optional[str],
-    multi_stage: Optional[bool],
-    context: Path,
-    renv_lock: Optional[Path],
-    remote_builder: Optional[str],
-    remote_config: Optional[Path],
-    remote_wait: int,
-    remote_off: bool,
-    dockerfile: Optional[Path],
-    build_arg: Optional[list[str]],
-) -> str:
-    """Build, push, and return the image reference. Shared by publish and deploy."""
-
-    _print_policy_banner()
-
-    # Handle --dockerfile mode
-    if dockerfile is not None:
-        dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
-        if dockerfile_text is None:
-            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
-            raise typer.Exit(code=1)
-
-        if file is None and tarball is None and requirements is None:
-            if repository is None:
-                console.print(
-                    "[red]Error:[/red] --repository is required when using --dockerfile "
-                    "without an environment file."
-                )
-                raise typer.Exit(code=1)
-            report = None
-            resolved_repository = repository
-            env_name = _slugify(Path(repository).name)
-        else:
-            report = _load_with_feedback(file, tarball, requirements, snapshot)
-            _print_warnings(report)
-            _enforce_policy_constraints(report)
-            resolved_repository = _resolve_repository(repository, report.env_name)
-            env_name = report.env_name
-
-        remote_opts = _resolve_remote_options(
-            remote_builder, remote_config, remote_wait, remote_off
-        )
-
-        if remote_opts:
-            return _build_image_remote(
-                report,
-                repository=resolved_repository,
-                tag=tag,
-                env_name=env_name,
-                template=template,
-                builder_override=builder_base,
-                runtime_override=runtime_base,
-                multi_stage_override=multi_stage,
-                context=context,
-                push=True,
-                renv_lock=None,
-                remote_options=remote_opts,
-                dockerfile_override=dockerfile_text,
-                build_args=build_arg,
-            )
-        else:
-            return _build_image_local(
-                report,
-                repository=resolved_repository,
-                tag=tag,
-                env_name=env_name,
-                template=template,
-                builder_override=builder_base,
-                runtime_override=runtime_base,
-                multi_stage_override=multi_stage,
-                context=context,
-                push=True,
-                renv_lock=None,
-                dockerfile_override=dockerfile_text,
-                build_args=build_arg,
-            )
-
-    # Standard mode
-    if file is None and tarball is None and requirements is None:
-        file = Path("env.yaml")
-
-    report = _load_with_feedback(file, tarball, requirements, snapshot)
-    _print_warnings(report)
-    _enforce_policy_constraints(report)
-    renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-    resolved_repository = _resolve_repository(repository, report.env_name)
-
-    remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
-
-    if remote_opts:
-        return _build_image_remote(
-            report,
-            repository=resolved_repository,
-            tag=tag,
-            env_name=report.env_name,
-            template=template,
-            builder_override=builder_base,
-            runtime_override=runtime_base,
-            multi_stage_override=multi_stage,
-            context=context,
-            push=True,
-            renv_lock=renv_lock_text,
-            remote_options=remote_opts,
-            build_args=build_arg,
-        )
-    else:
-        return _build_image_local(
-            report,
-            repository=resolved_repository,
-            tag=tag,
-            env_name=report.env_name,
-            template=template,
-            builder_override=builder_base,
-            runtime_override=runtime_base,
-            multi_stage_override=multi_stage,
-            context=context,
-            push=True,
-            renv_lock=renv_lock_text,
-            build_args=build_arg,
-        )
-
-
-def _deploy_image(
-    image_ref: str,
-    *,
-    commands: Optional[str],
-    runtime: str,
-    image_cache: Optional[Path],
-    output_dir: Optional[Path],
-    module_output_dir: Optional[Path],
-    extra_mounts: Optional[str],
-    env: Optional[str],
-    gpu: bool,
-    env_dir: Optional[str],
-    shims: Optional[str],
-    no_wrap: bool,
-    no_module: bool,
-) -> None:
-    """Pull a SIF, generate wrappers and a module file for an image reference."""
-    from .config import load_config
-    from .wrappers import WrapperConfig, WrapperError, _sanitize_image_name, generate_wrappers
-
-    config = load_config()
-
-    # Resolve runtime
-    if runtime == "singularity":
-        runtime = config.wrapper_default_runtime or "singularity"
-
-    # Resolve image cache
-    if image_cache is None and runtime == "singularity":
-        if config.wrapper_image_cache:
-            image_cache = config.wrapper_image_cache
-        else:
-            image_cache = Path.home() / ".local" / "absconda" / "sif-cache"
-
-    name_tag = _image_name_tag(image_ref)
-
-    # --- Step 1: Pull SIF ---
-    if runtime == "singularity":
-        sif_filename = f"{_sanitize_image_name(image_ref)}.sif"
-        image_cache.mkdir(parents=True, exist_ok=True)
-        sif_path = image_cache / sif_filename
-        console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
-        _run_command(["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"])
-        console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
-
-    # Parse command list (needed by both wrappers and module)
-    command_list: list[str] = []
-    if commands is not None:
-        command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
-    elif not no_wrap:
-        console.print(
-            "[red]Error:[/red] --commands is required for deploy.\n"
-            "Specify commands to wrap, e.g., --commands python,pip,jupyter"
-        )
-        raise typer.Exit(code=1)
-
-    # --- Step 2: Generate wrappers ---
-    if not no_wrap:
-        # Determine output directory
-        if output_dir is None:
-            if config.wrapper_default_output_dir:
-                output_dir = config.wrapper_default_output_dir / name_tag
-            else:
-                output_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
-
-        # Parse mounts
-        mount_list = []
-        if extra_mounts:
-            mount_list = [m.strip() for m in extra_mounts.split(",") if m.strip()]
-        if config.wrapper_default_mounts:
-            mount_list = config.wrapper_default_mounts + mount_list
-
-        # Parse environment variables
-        env_list = []
-        if env:
-            env_list = [e.strip() for e in env.split(",") if e.strip()]
-        if config.wrapper_env_passthrough:
-            env_list = config.wrapper_env_passthrough + env_list
-
-        # Parse shim groups
-        shim_list = []
-        if shims:
-            shim_list = [s.strip() for s in shims.split(",") if s.strip()]
-
-        wrapper_config = WrapperConfig(
-            image_ref=image_ref,
-            commands=command_list,
-            runtime=runtime,
-            output_dir=output_dir,
-            image_cache=image_cache,
-            extra_mounts=mount_list,
-            env_passthrough=env_list,
-            gpu=gpu,
-            env_dir=env_dir,
-            shims=shim_list,
-        )
-
-        try:
-            wrapper_paths = generate_wrappers(wrapper_config)
-            console.print(
-                f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper(s) in {output_dir}"
-            )
-        except WrapperError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(1) from exc
-
-    # --- Step 3: Generate module file ---
-    if not no_module:
-        from .modules import ModuleConfig, ModuleError, generate_module
-
-        # Determine wrapper dir for module (same as output_dir above)
-        wrapper_dir = output_dir
-        if wrapper_dir is None:
-            if config.wrapper_default_output_dir:
-                wrapper_dir = config.wrapper_default_output_dir / name_tag
-            else:
-                wrapper_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
-
-        if module_output_dir is None:
-            if config.module_default_output_dir:
-                module_output_dir = config.module_default_output_dir
-            else:
-                module_output_dir = Path.home() / ".local" / "absconda" / "modulefiles"
-
-        module_name = name_tag
-        description = f"{name_tag.split('/')[0]} environment"
-
-        module_config = ModuleConfig(
-            name=module_name,
-            wrapper_dir=wrapper_dir,
-            output_dir=module_output_dir,
-            description=description,
-            image_ref=image_ref,
-            runtime=runtime,
-            commands=command_list or None,
-        )
-
-        try:
-            module_file = generate_module(module_config)
-            console.print(f"[green]✓[/green] Generated module file: {module_file}")
-        except ModuleError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(1) from exc
-
-    # --- Summary ---
-    console.print(f"\n[bold green]Deployed:[/bold green] {image_ref}")
-    if not no_module and module_output_dir:
-        console.print("\n[bold cyan]Usage:[/bold cyan]")
-        console.print(f"  module use {module_output_dir}")
-        console.print(f"  module load {name_tag}")
+# ---------------------------------------------------------------------------
+# ─── deploy ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 @app.command()
 def deploy(
-    image: Optional[str] = typer.Argument(
-        None,
-        help="Container image reference (e.g., ghcr.io/org/env:tag). "
-        "Omit to build first with --file.",
-    ),
-    commands: Optional[str] = typer.Option(
-        None,
-        "--commands",
-        help="Comma-separated list of commands to wrap (e.g., python,pip,jupyter).",
-    ),
-    runtime: str = typer.Option(
-        "singularity",
-        "--runtime",
-        help="Container runtime: 'singularity' or 'docker' (defaults to config).",
-    ),
-    image_cache: Optional[Path] = typer.Option(
-        None,
-        "--image-cache",
-        help="Directory to pull the SIF image into (defaults to config).",
-    ),
-    output_dir: Optional[Path] = typer.Option(
-        None,
-        "--output-dir",
-        help="Directory for wrapper scripts (defaults to config).",
-    ),
-    module_output_dir: Optional[Path] = typer.Option(
-        None,
-        "--module-dir",
-        help="Directory for module files (defaults to config).",
-    ),
-    extra_mounts: Optional[str] = typer.Option(
-        None,
-        "--extra-mounts",
-        help="Additional volume mounts (comma-separated paths).",
-    ),
-    env: Optional[str] = typer.Option(
-        None,
-        "--env",
-        help="Additional environment variables to pass through (comma-separated).",
-    ),
-    gpu: bool = typer.Option(
-        False,
-        "--gpu",
-        help="Enable GPU support (--nv for Singularity, --gpus all for Docker).",
-    ),
-    env_dir: Optional[str] = typer.Option(
-        None,
-        "--env-dir",
-        help="Path to conda environment inside container.",
-    ),
-    no_wrap: bool = typer.Option(
-        False,
-        "--no-wrap",
-        help="Skip wrapper generation.",
-    ),
-    no_module: bool = typer.Option(
-        False,
-        "--no-module",
-        help="Skip module file generation.",
-    ),
-    shims: Optional[str] = typer.Option(
-        None,
-        "--shims",
-        help=(
-            "Comma-separated shim groups to inject (e.g., pbs,singularity). "
-            "Generates host-command pass-through scripts alongside wrappers."
-        ),
-    ),
-    # --- Build flags (used when --file is provided to build first) ---
+    ctx: typer.Context,
     file: Optional[Path] = typer.Option(
         None,
         "--file",
         "-f",
-        help="Path to a Conda environment file (triggers build + push before deploy).",
-    ),
-    repository: Optional[str] = typer.Option(
-        None,
-        "--repository",
-        help="Target OCI repository (used with --file).",
-    ),
-    tag: Optional[str] = typer.Option(
-        None,
-        "--tag",
-        help="Image tag (used with --file). Defaults to 'YYYYMMDD'.",
+        exists=True,
+        readable=True,
+        help="Path to environment.yaml file.",
     ),
     tarball: Optional[Path] = typer.Option(
         None,
         "--tarball",
         "-t",
-        help="Path to a pre-packed conda tarball (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Use a conda-pack tarball (.tar.gz) for offline/reproducible builds.",
     ),
     requirements: Optional[Path] = typer.Option(
         None,
         "--requirements",
         "-r",
-        help="Path to a pip requirements.txt file (alternative to --file).",
+        exists=True,
+        readable=True,
+        help="Path to a pip requirements.txt file.",
     ),
     snapshot: Optional[Path] = typer.Option(
         None,
         "--snapshot",
-        help="Optional snapshot generated via 'conda env export'.",
+        "-s",
+        exists=True,
+        readable=True,
+        help="Path to a snapshot YAML (optional lock file) for reproducible rebuilds.",
     ),
     template: Optional[Path] = typer.Option(
         None,
         "--template",
-        help="Path to a custom template file.",
+        exists=True,
+        readable=True,
+        help="Path to a custom Jinja2 Dockerfile template.",
+    ),
+    repository: Optional[str] = typer.Option(
+        None,
+        "--repository",
+        help="Full repository reference, e.g. ghcr.io/org/name.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Image tag (default: YYYYMMDD date stamp).",
     ),
     builder_base: Optional[str] = typer.Option(
         None,
         "--builder-base",
-        help="Override the builder stage base image.",
+        help="Override the multi-stage builder base image.",
     ),
     runtime_base: Optional[str] = typer.Option(
         None,
         "--runtime-base",
-        help="Override the runtime stage base image.",
+        help="Override the runtime base image.",
     ),
     multi_stage: Optional[bool] = typer.Option(
         None,
-        "--multi-stage/--single-stage",
-        help="Force enabling or disabling multi-stage builds.",
+        "--multi-stage / --single-stage",
+        help="Force multi-stage or single-stage mode.",
     ),
     context: Path = typer.Option(
-        Path("."),
+        ".",
         "--context",
+        "-C",
         help="Docker build context directory.",
-    ),
-    renv_lock: Optional[Path] = typer.Option(
-        None,
-        "--renv-lock",
-        help="Path to an renv.lock file.",
     ),
     remote_builder: Optional[str] = typer.Option(
         None,
         "--remote-builder",
-        help="Name of the remote builder.",
+        help="Name of the remote builder defined in absconda-remote.yaml.",
     ),
     remote_config: Optional[Path] = typer.Option(
         None,
         "--remote-config",
-        help="Path to absconda-remote.yaml.",
+        help="Path to absconda-remote.yaml (auto-discovered if omitted).",
     ),
     remote_wait: int = typer.Option(
         900,
         "--remote-wait",
-        help="Seconds to wait for a busy remote builder.",
+        help="Max seconds to wait for remote builder lock.",
     ),
     remote_off: bool = typer.Option(
         False,
         "--remote-off",
-        help="Stop the remote builder after the run.",
+        help="Shut down the remote builder after this build.",
+    ),
+    renv_lock: Optional[Path] = typer.Option(
+        None,
+        "--renv-lock",
+        exists=True,
+        readable=True,
+        help="Path to an renv.lock file to embed in the container.",
     ),
     dockerfile: Optional[Path] = typer.Option(
         None,
         "--dockerfile",
-        help="Path to a pre-existing Dockerfile (skips generation).",
+        "-d",
+        exists=True,
+        readable=True,
+        help="Path to a pre-written Dockerfile (skips generation).",
+    ),
+    singularity_dir: Path = typer.Option(
+        ...,
+        "--singularity-dir",
+        help="Directory to store the SIF image.",
+    ),
+    commands: Optional[str] = typer.Option(
+        None,
+        "--commands",
+        help="Comma-separated list of commands to generate wrappers for (auto-detected if omitted).",
+    ),
+    shims: Optional[str] = typer.Option(
+        None,
+        "--shims",
+        help="Comma-separated shim modes, e.g. pbs,singularity.",
+    ),
+    modulefile_dir: Path = typer.Option(
+        ...,
+        "--modulefile-dir",
+        help="Where to install the generated modulefile.",
     ),
     build_arg: Optional[list[str]] = typer.Option(
         None,
         "--build-arg",
-        help="Docker build argument (KEY=VALUE). Can be repeated.",
+        help="Pass a build-time variable (KEY=VALUE). May be specified multiple times.",
     ),
 ) -> None:
-    """Pull a container image, generate wrappers, and create a module file.
+    """Build, push, pull-to-SIF, wrap, and install module - all-in-one deploy step."""
 
-    Can deploy an existing image by reference, or build+push first
-    when --file (or --tarball/--requirements) is provided.
+    _print_policy_banner()
 
-    \b
-    Examples:
-      # Deploy an existing image:
-      absconda deploy ghcr.io/org/myenv:20260412
-
-      # Full pipeline (build + push + deploy):
-      absconda deploy --file env.yaml --remote-builder gcp-builder --commands python,pip
-    """
-
-    has_build_input = file is not None or tarball is not None or requirements is not None
-
-    if image is None and not has_build_input:
-        console.print(
-            "[red]Error:[/red] Provide an image reference as an argument, "
-            "or use --file/--tarball/--requirements to build first."
-        )
-        raise typer.Exit(code=1)
-
-    # If build inputs are provided, run publish first
-    if has_build_input:
-        image_ref = _publish_and_get_ref(
-            file=file,
-            tarball=tarball,
-            requirements=requirements,
-            snapshot=snapshot,
-            repository=repository,
-            tag=tag,
-            template=template,
-            builder_base=builder_base,
-            runtime_base=runtime_base,
-            multi_stage=multi_stage,
-            context=context,
-            renv_lock=renv_lock,
-            remote_builder=remote_builder,
-            remote_config=remote_config,
-            remote_wait=remote_wait,
-            remote_off=remote_off,
-            dockerfile=dockerfile,
-            build_arg=build_arg,
-        )
-        console.print(f"[green]Image pushed:[/green] {image_ref}")
+    dockerfile_override: Optional[str] = None
+    report: Optional[LoadReport] = None
+    if dockerfile is not None:
+        dockerfile_override = dockerfile.read_text(encoding="utf-8")
+        if repository is None:
+            console.print(
+                "[red]Error:[/red] --repository is required when using --dockerfile "
+                "(no environment file to derive a name from)."
+            )
+            raise typer.Exit(code=1)
+        env_name = repository.rsplit("/", 1)[-1].split(":")[0]
     else:
-        image_ref = image
+        report = _load_with_feedback(file, tarball, requirements, snapshot)
+        _print_warnings(report)
+        _enforce_policy_constraints(report)
+        env_name = report.env_name
 
-    # Deploy: pull + wrap + module
-    _deploy_image(
-        image_ref,
-        commands=commands,
-        runtime=runtime,
-        image_cache=image_cache,
-        output_dir=output_dir,
-        module_output_dir=module_output_dir,
-        extra_mounts=extra_mounts,
-        env=env,
-        gpu=gpu,
-        env_dir=env_dir,
-        shims=shims,
-        no_wrap=no_wrap,
-        no_module=no_module,
+    resolved_repository = _resolve_repository(repository, env_name)
+    renv_lock_content = _read_optional_text_file(renv_lock, "renv.lock")
+    remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
+
+    # ---------- STEP 1: build + push ----------
+    console.print("[bold]Step 1/4:[/bold] Building and pushing container image...")
+    if remote_opts:
+        image_ref = _build_image_remote(
+            report,
+            repository=resolved_repository,
+            tag=tag,
+            env_name=env_name,
+            template=template,
+            builder_override=builder_base,
+            runtime_override=runtime_base,
+            multi_stage_override=multi_stage,
+            context=context,
+            push=True,
+            renv_lock=renv_lock_content,
+            remote_options=remote_opts,
+            dockerfile_override=dockerfile_override,
+            build_args=build_arg,
+        )
+    else:
+        image_ref = _build_image_local(
+            report,
+            repository=resolved_repository,
+            tag=tag,
+            env_name=env_name,
+            template=template,
+            builder_override=builder_base,
+            runtime_override=runtime_base,
+            multi_stage_override=multi_stage,
+            context=context,
+            push=True,
+            renv_lock=renv_lock_content,
+            dockerfile_override=dockerfile_override,
+            build_args=build_arg,
+        )
+    console.print(f"  [green]Published image:[/green] {image_ref}")
+
+    # ---------- STEP 2: pull as SIF ----------
+    console.print("[bold]Step 2/4:[/bold] Pulling image as Singularity SIF...")
+    singularity_dir.mkdir(parents=True, exist_ok=True)
+    sif_file = singularity_dir / f"{env_name}.sif"
+    sif_uri = f"docker://{image_ref}"
+    _run_command(["singularity", "pull", "--force", str(sif_file), sif_uri])
+    console.print(f"  [green]SIF image:[/green] {sif_file}")
+
+    # ---------- STEP 3: wrappers ----------
+    console.print("[bold]Step 3/4:[/bold] Generating command wrappers...")
+    from .wrappers import WrapperConfig, generate_wrappers
+
+    shim_list: Optional[list[str]] = None
+    if shims:
+        shim_list = [s.strip() for s in shims.split(",") if s.strip()]
+
+    wrapper_config = WrapperConfig(
+        sif_path=sif_file,
+        commands=commands.split(",") if commands else None,
+        shims=shim_list,
     )
+    wrappers = generate_wrappers(wrapper_config)
+    for cmd_name, wrapper_path in sorted(wrappers.items()):
+        console.print(f"  wrapper: [cyan]{cmd_name}[/cyan] -> {wrapper_path}")
+
+    # ---------- STEP 4: modulefile ----------
+    console.print("[bold]Step 4/4:[/bold] Installing modulefile...")
+    from .modules import ModuleConfig, generate_modulefile
+
+    module_config = ModuleConfig(
+        env_name=env_name,
+        version=tag or _date_stamp(),
+        sif_path=sif_file,
+        wrapper_dir=wrapper_config.output_dir,
+    )
+    module_path = generate_modulefile(module_config, modulefile_dir)
+    console.print(f"  [green]Modulefile:[/green] {module_path}")
+
+    console.print(f"\n[bold green]Deploy complete![/bold green] {image_ref}")
 
 
-def _load_remote_definition_or_exit(
-    builder: str, config: Optional[Path]
-) -> remote.RemoteBuilderDefinition:
-    try:
-        return remote.load_remote_definition(builder, config_path=config)
-    except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-
-
-def _handle_remote_error(prefix: str, exc: remote.RemoteError) -> None:
-    console.print(f"[red]{prefix}[/red] {exc}")
-    raise typer.Exit(code=1) from exc
+# ---------------------------------------------------------------------------
+# ─── remote subcommands ────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 
 @remote_app.command("list")
 def remote_list(
     config: Optional[Path] = REMOTE_CONFIG_OPTION,
 ) -> None:
+    """List all configured remote builders."""
     try:
-        config_path, builders = remote.list_remote_builders(config_path=config)
+        path, names = remote.list_remote_builders(config)
     except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(code=0)
 
-    console.print(f"Remote builders defined in {config_path}:")
-    for name in builders:
-        console.print(f" • {name}")
-
-
-@remote_app.command("provision")
-def remote_provision(
-    builder: str = typer.Argument(..., help="Remote builder name."),
-    config: Optional[Path] = REMOTE_CONFIG_OPTION,
-) -> None:
-    definition = _load_remote_definition_or_exit(builder, config)
-    try:
-        remote.provision_remote_builder(definition, console)
-    except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-    except remote.RemoteError as exc:
-        _handle_remote_error("Provisioning failed:", exc)
-
-
-@remote_app.command("start")
-def remote_start(
-    builder: str = typer.Argument(..., help="Remote builder name."),
-    config: Optional[Path] = REMOTE_CONFIG_OPTION,
-) -> None:
-    definition = _load_remote_definition_or_exit(builder, config)
-    try:
-        remote.start_remote_builder(definition, console)
-    except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-    except remote.RemoteError as exc:
-        _handle_remote_error("Start failed:", exc)
-
-
-@remote_app.command("stop")
-def remote_stop(
-    builder: str = typer.Argument(..., help="Remote builder name."),
-    config: Optional[Path] = REMOTE_CONFIG_OPTION,
-) -> None:
-    definition = _load_remote_definition_or_exit(builder, config)
-    try:
-        remote.stop_remote_builder(definition, console)
-    except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-    except remote.RemoteError as exc:
-        _handle_remote_error("Stop failed:", exc)
+    console.print(f"Configured builders in [cyan]{path}[/cyan]:")
+    for name in names:
+        console.print(f"  - {name}")
 
 
 @remote_app.command("status")
 def remote_status(
-    builder: str = typer.Argument(..., help="Remote builder name."),
+    name: str = typer.Argument(help="Name of the remote builder to inspect."),
     config: Optional[Path] = REMOTE_CONFIG_OPTION,
 ) -> None:
-    definition = _load_remote_definition_or_exit(builder, config)
-    status = remote.check_remote_status(definition)
+    """Check whether a remote builder is reachable and idle."""
+    try:
+        defn = remote.load_remote_definition(name, config_path=config)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
 
-    reachability = "reachable" if status.reachable else "unreachable"
-    color = "green" if status.reachable else "red"
-    console.print(
-        f"Builder [cyan]{status.name}[/cyan] is [{color}]{reachability}[/{color}] via SSH."
-    )
-    if status.ssh_error:
-        console.print(f"  ssh: {status.ssh_error}")
-        # Provide helpful hint for GCP OS Login authentication issues
-        if "Permission denied (publickey)" in status.ssh_error and "gcp" in status.name.lower():
-            host = (
-                definition.ssh_target.split("@")[1]
-                if "@" in definition.ssh_target
-                else definition.ssh_target
-            )
-            console.print(
-                "\n[yellow]💡 Tip:[/yellow] For GCP VMs with OS Login, "
-                "you may need to authenticate first:"
-            )
-            console.print(
-                f"   gcloud compute ssh {host} --zone=$GCP_ZONE "
-                f"--tunnel-through-iap --project=$GCP_PROJECT"
-            )
+    console.print(f"Checking status of [cyan]{name}[/cyan]...")
+    st = remote.check_remote_status(defn)
 
-    if status.busy:
-        owner = status.lock_owner or "unknown"
-        console.print(f"[yellow]Busy[/yellow]: lock file at {status.lock_path} held by {owner}.")
-    else:
-        console.print("Lock: free")
+    console.print(f"  Reachable: {'yes' if st.reachable else 'no'}")
+    if st.ssh_error:
+        console.print(f"  SSH error: {st.ssh_error}")
+    console.print(f"  Busy:      {'yes' if st.busy else 'no'}")
+    if st.lock_owner:
+        console.print(f"  Lock owner: {st.lock_owner}")
+    if st.health_ok is not None:
+        console.print(f"  Health:    {'ok' if st.health_ok else 'FAIL'}")
+    if st.health_error:
+        console.print(f"  Health error: {st.health_error}")
 
-    if status.health_ok is True:
-        console.print("Health check: [green]passing[/green]")
-    elif status.health_ok is False:
-        console.print("Health check: [red]failing[/red]")
-        if status.health_error:
-            console.print(f"  details: {status.health_error}")
-    else:
-        console.print("Health check: not configured")
+
+@remote_app.command("provision")
+def remote_provision(
+    name: str = typer.Argument(help="Name of the remote builder."),
+    config: Optional[Path] = REMOTE_CONFIG_OPTION,
+) -> None:
+    """Provision infrastructure for a remote builder."""
+    try:
+        defn = remote.load_remote_definition(name, config_path=config)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        remote.provision_remote_builder(defn, console)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    except remote.RemoteError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]Provisioned builder '{name}'[/green]")
+
+
+@remote_app.command("start")
+def remote_start(
+    name: str = typer.Argument(help="Name of the remote builder."),
+    config: Optional[Path] = REMOTE_CONFIG_OPTION,
+) -> None:
+    """Start a remote builder VM."""
+    try:
+        defn = remote.load_remote_definition(name, config_path=config)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        remote.start_remote_builder(defn, console)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    except remote.RemoteError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]Started builder '{name}'[/green]")
+
+
+@remote_app.command("stop")
+def remote_stop(
+    name: str = typer.Argument(help="Name of the remote builder."),
+    config: Optional[Path] = REMOTE_CONFIG_OPTION,
+) -> None:
+    """Stop a remote builder VM."""
+    try:
+        defn = remote.load_remote_definition(name, config_path=config)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        remote.stop_remote_builder(defn, console)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    except remote.RemoteError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]Stopped builder '{name}'[/green]")
 
 
 @remote_app.command("init")
 def remote_init(
-    builder: str = typer.Argument(..., help="Remote builder name."),
+    name: str = typer.Argument(help="Name of the remote builder to initialise."),
     config: Optional[Path] = REMOTE_CONFIG_OPTION,
 ) -> None:
-    """Initialize SSH access to a remote builder (GCP OS Login setup)."""
-    definition = _load_remote_definition_or_exit(builder, config)
+    """First-time SSH setup for a remote builder (e.g. OS Login key sync)."""
+    try:
+        defn = remote.load_remote_definition(name, config_path=config)
+    except remote.RemoteConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
 
-    # Check if this looks like a GCP builder
-    metadata = definition.metadata
-    if "gcp" not in builder.lower() and "project" not in metadata:
+    console.print(f"Initialising SSH for remote builder [cyan]{name}[/cyan]...")
+
+    # Use gcloud to push SSH keys and verify connectivity
+    meta = defn.metadata
+    project = meta.get("project")
+    zone = meta.get("zone")
+    if not project or not zone:
         console.print(
-            f"[yellow]Warning:[/yellow] This command is designed for GCP builders with OS Login.\n"
-            f"Builder '{builder}' may not need initialization."
+            "[red]Error:[/red] Builder metadata must include 'project' and 'zone' for init."
         )
-        if not typer.confirm("Continue anyway?"):
-            raise typer.Exit(0)
+        raise typer.Exit(code=1)
 
-    # Extract host and build gcloud command
-    host = (
-        definition.ssh_target.split("@")[1]
-        if "@" in definition.ssh_target
-        else definition.ssh_target
-    )
-    zone = metadata.get("zone", "${GCP_ZONE}")
-    project = metadata.get("project", "${GCP_PROJECT}")
-
-    console.print(f"Initializing SSH access to [cyan]{builder}[/cyan]...")
-    console.print(
-        f"This will run: gcloud compute ssh {host} --zone={zone} "
-        f"--tunnel-through-iap --project={project}\n"
-    )
-
-    cmd = [
-        "gcloud",
-        "compute",
-        "ssh",
-        host,
+    ssh_target = defn.ssh_target.split("@")[-1]  # extract hostname
+    _run_command([
+        "gcloud", "compute", "ssh",
+        ssh_target,
+        f"--project={project}",
         f"--zone={zone}",
         "--tunnel-through-iap",
-        f"--project={project}",
-        "--command=echo 'SSH access configured successfully!'",
-    ]
+        "--command=echo SSH connection successful",
+    ])
 
-    try:
-        subprocess.run(cmd, check=True)
-        console.print("\n[green]✓[/green] SSH access initialized successfully!")
-
-        # Try to get OS Login username
-        try:
-            result = subprocess.run(
-                [
-                    "gcloud",
-                    "compute",
-                    "os-login",
-                    "describe-profile",
-                    "--format=value(posixAccounts[0].username)",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            os_login_user = result.stdout.strip()
-            if os_login_user:
-                console.print(
-                    f"\n[yellow]💡 Note:[/yellow] Your OS Login username is: "
-                    f"[cyan]{os_login_user}[/cyan]"
-                )
-                console.print(
-                    "Update the 'user' field in your config if it differs from the current setting."
-                )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass  # Ignore if we can't determine OS Login username
-
-        console.print(f"\nYou can now use: absconda remote status {builder}")
-    except subprocess.CalledProcessError as exc:
-        console.print(f"\n[red]✗[/red] Initialization failed with exit code {exc.returncode}")
-        raise typer.Exit(1) from exc
-    except FileNotFoundError as exc:
-        console.print("[red]✗[/red] gcloud command not found. Please install the Google Cloud SDK.")
-        raise typer.Exit(1) from exc
-
-
-@app.command()
-def wrap(
-    image: str = typer.Option(
-        ...,
-        "--image",
-        help="Container image reference (e.g., ghcr.io/org/env:tag).",
-    ),
-    commands: str = typer.Option(
-        ...,
-        "--commands",
-        help="Comma-separated list of commands to wrap (e.g., python,pip,jupyter).",
-    ),
-    runtime: str = typer.Option(
-        "singularity",
-        "--runtime",
-        help="Container runtime: 'singularity' or 'docker'.",
-    ),
-    output_dir: Optional[Path] = typer.Option(
-        None,
-        "--output-dir",
-        help=(
-            "Directory for wrapper scripts "
-            "(defaults to config or ~/.local/absconda/wrappers/<image-name>)."
-        ),
-    ),
-    image_cache: Optional[Path] = typer.Option(
-        None,
-        "--image-cache",
-        help=(
-            "SIF cache directory for Singularity "
-            "(defaults to config or ~/.local/absconda/sif-cache)."
-        ),
-    ),
-    extra_mounts: Optional[str] = typer.Option(
-        None,
-        "--extra-mounts",
-        help=(
-            "Additional volume mounts "
-            "(comma-separated paths, e.g., /scratch/$PROJECT,/g/data/$PROJECT)."
-        ),
-    ),
-    env: Optional[str] = typer.Option(
-        None,
-        "--env",
-        help="Additional environment variables to pass through (comma-separated).",
-    ),
-    gpu: bool = typer.Option(
-        False,
-        "--gpu",
-        help="Enable GPU support (--nv for Singularity, --gpus all for Docker).",
-    ),
-    env_dir: Optional[str] = typer.Option(
-        None,
-        "--env-dir",
-        help=(
-            "Path to conda environment inside container "
-            "(e.g., /opt/conda/envs/myenv). Required for Singularity PATH setup."
-        ),
-    ),
-    shims: Optional[str] = typer.Option(
-        None,
-        "--shims",
-        help=(
-            "Comma-separated shim groups to inject (e.g., pbs,singularity). "
-            "Generates host-command pass-through scripts alongside wrappers."
-        ),
-    ),
-) -> None:
-    """Generate wrapper scripts for running commands inside containers.
-
-    Creates executable shell scripts that transparently run specified commands
-    inside a container runtime, making containerized environments feel like
-    native executables on HPC systems.
-    """
-    from .config import load_config
-    from .wrappers import WrapperConfig, WrapperError, generate_wrappers
-
-    # Load configuration
-    config = load_config()
-
-    # Parse command list
-    command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
-    if not command_list:
-        console.print("[red]Error:[/red] No commands specified")
-        raise typer.Exit(1)
-
-    # Determine output directory
-    if output_dir is None:
-        name_tag = _image_name_tag(image)
-        if config.wrapper_default_output_dir:
-            output_dir = config.wrapper_default_output_dir / name_tag
-        else:
-            output_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
-
-    # Determine image cache
-    if image_cache is None and runtime == "singularity":
-        if config.wrapper_image_cache:
-            image_cache = config.wrapper_image_cache
-        else:
-            image_cache = Path.home() / ".local" / "absconda" / "sif-cache"
-
-    # Parse mounts
-    mount_list = []
-    if extra_mounts:
-        mount_list = [m.strip() for m in extra_mounts.split(",") if m.strip()]
-
-    # Add default mounts from config
-    if config.wrapper_default_mounts:
-        mount_list = config.wrapper_default_mounts + mount_list
-
-    # Parse environment variables
-    env_list = []
-    if env:
-        env_list = [e.strip() for e in env.split(",") if e.strip()]
-
-    # Add default env passthrough from config
-    if config.wrapper_env_passthrough:
-        env_list = config.wrapper_env_passthrough + env_list
-
-    # Parse shim groups
-    shim_list = []
-    if shims:
-        shim_list = [s.strip() for s in shims.split(",") if s.strip()]
-
-    # Create wrapper config
-    wrapper_config = WrapperConfig(
-        image_ref=image,
-        commands=command_list,
-        runtime=runtime,
-        output_dir=output_dir,
-        image_cache=image_cache,
-        extra_mounts=mount_list,
-        env_passthrough=env_list,
-        gpu=gpu,
-        env_dir=env_dir,
-        shims=shim_list,
-    )
-
-    # Generate wrappers
-    try:
-        wrapper_paths = generate_wrappers(wrapper_config)
-
-        console.print(
-            f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper script(s) in {output_dir}"
-        )
-        console.print(f"\n[bold]Runtime:[/bold] {runtime}")
-        console.print(f"[bold]Image:[/bold] {image}")
-        if gpu:
-            console.print("[bold]GPU:[/bold] enabled")
-
-        console.print("\n[bold]Wrapped commands:[/bold]")
-        for cmd, path in wrapper_paths.items():
-            console.print(f"  • {cmd} → {path}")
-
-        console.print("\n[bold cyan]Next steps:[/bold cyan]")
-        console.print(f"  1. Add {output_dir} to your PATH, or")
-        console.print(
-            f"  2. Generate a module file with: absconda module --wrapper-dir {output_dir}"
-        )
-
-    except WrapperError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
-
-
-@app.command()
-def module(
-    name: Optional[str] = typer.Option(
-        None,
-        "--name",
-        help="Module name with version (e.g., myenv/1.0). Defaults to <name>/<tag> from --image.",
-    ),
-    wrapper_dir: Optional[Path] = typer.Option(
-        None,
-        "--wrapper-dir",
-        help="Directory containing wrapper scripts "
-        "(defaults to wrappers.default_output_dir/<name>/<tag>).",
-    ),
-    output_dir: Optional[Path] = typer.Option(
-        None,
-        "--output-dir",
-        help="Directory for module file (defaults to config or ~/.local/absconda/modulefiles).",
-    ),
-    description: Optional[str] = typer.Option(
-        None,
-        "--description",
-        help="Module description for help text. Defaults to '<name> environment'.",
-    ),
-    image: str = typer.Option(
-        ...,
-        "--image",
-        help="Container image reference (for metadata and deriving defaults).",
-    ),
-    runtime: str = typer.Option(
-        "singularity",
-        "--runtime",
-        help="Container runtime: 'singularity' or 'docker'.",
-    ),
-    commands_str: Optional[str] = typer.Option(
-        None,
-        "--commands",
-        help="Comma-separated list of wrapped commands (for help text).",
-    ),
-) -> None:
-    """Generate an environment module file for wrapper scripts.
-
-    Creates a Tcl module file that adds wrapper directories to PATH and sets
-    environment variables. Compatible with HPC module systems.
-    """
-    from .config import load_config
-    from .modules import ModuleConfig, ModuleError, generate_module
-
-    # Load configuration
-    config = load_config()
-
-    # Derive defaults from image ref
-    name_tag = _image_name_tag(image)
-
-    if name is None:
-        name = name_tag
-
-    if description is None:
-        description = f"{name_tag.split('/')[0]} environment"
-
-    if wrapper_dir is None:
-        if config.wrapper_default_output_dir:
-            wrapper_dir = config.wrapper_default_output_dir / name_tag
-        else:
-            wrapper_dir = Path.home() / ".local" / "absconda" / "wrappers" / name_tag
-
-    # Determine output directory
-    if output_dir is None:
-        if config.module_default_output_dir:
-            output_dir = config.module_default_output_dir
-        else:
-            output_dir = Path.home() / ".local" / "absconda" / "modulefiles"
-
-    # Parse commands list if provided
-    commands_list = None
-    if commands_str:
-        commands_list = [cmd.strip() for cmd in commands_str.split(",") if cmd.strip()]
-
-    # Create module config
-    module_config = ModuleConfig(
-        name=name,
-        wrapper_dir=wrapper_dir,
-        output_dir=output_dir,
-        description=description,
-        image_ref=image,
-        runtime=runtime,
-        commands=commands_list,
-    )
-
-    # Generate module
-    try:
-        module_file = generate_module(module_config)
-
-        console.print(f"[green]✓[/green] Generated module file: {module_file}")
-        console.print(f"\n[bold]Module name:[/bold] {name}")
-        console.print(f"[bold]Wrapper directory:[/bold] {wrapper_dir}")
-        console.print(f"[bold]Runtime:[/bold] {runtime}")
-        console.print(f"[bold]Image:[/bold] {image}")
-
-        console.print("\n[bold cyan]Usage:[/bold cyan]")
-        console.print(f"  module use {output_dir}")
-        console.print(f"  module load {name}")
-        console.print(f"  module help {name}")
-
-    except ModuleError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
+    console.print(f"[green]SSH initialised for builder '{name}'[/green]")
 
 
 # ---------------------------------------------------------------------------
-# Config subcommands
+# ─── config subcommands ────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 
 
-@config_app.command("list")
-def config_list(
-    show_origin: bool = typer.Option(
-        False,
-        "--show-origin",
-        help="Show the origin file for each config value.",
-    ),
-) -> None:
-    """List all configuration settings.
-
-    Shows the merged configuration from all sources (system, user, environment).
-    """
+@config_app.command("show")
+def config_show() -> None:
+    """Display the resolved absconda configuration."""
     from . import config as cfg
 
-    if show_origin:
-        # Show each config file with its contents
-        configs = cfg.load_config_with_origins()
-        if not configs:
-            console.print("No configuration files found.")
-            return
+    absconda_config = cfg.load_config()
+    console.print("[bold]Absconda Configuration[/bold]")
+    console.print(f"  Registry:     {absconda_config.registry}")
+    console.print(f"  Organization: {absconda_config.organization or '(not set)'}")
+    console.print(f"  Default remote builder: {absconda_config.default_remote_builder or '(not set)'}")
 
-        for path, data in configs:
-            console.print(f"\n[bold cyan]{path}[/bold cyan]")
-            for key_path, value in cfg.flatten_config(data):
-                console.print(f"  {key_path}={value}")
-    else:
-        # Show merged config
-        merged_data: dict = {}
-        for _, data in cfg.load_config_with_origins():
-            merged_data = cfg._merge_configs(merged_data, data)
-
-        if not merged_data:
-            console.print("No configuration set.")
-            return
-
-        for key_path, value in cfg.flatten_config(merged_data):
-            console.print(f"{key_path}={value}")
-
-
-@config_app.command("get")
-def config_get(
-    key: str = typer.Argument(
-        ..., help="Configuration key (dot-notation, e.g., wrappers.default_runtime)."
-    ),
-) -> None:
-    """Get a configuration value.
-
-    Use dot-notation for nested keys (e.g., wrappers.default_runtime).
-    """
-    from . import config as cfg
-
-    value = cfg.get_config_value(key)
-    if value is None:
-        raise typer.Exit(1)
-
-    if isinstance(value, list):
-        for item in value:
-            console.print(item)
-    elif isinstance(value, dict):
-        for k, v in cfg.flatten_config(value, key):
-            console.print(f"{k}={v}")
-    else:
-        console.print(value)
+    config_dirs = cfg.get_config_dirs()
+    console.print("\n[bold]Config search paths:[/bold]")
+    for d in config_dirs:
+        exists = d.exists()
+        marker = "[green]✓[/green]" if exists else "[dim]✗[/dim]"
+        console.print(f"  {marker} {d}")
 
 
 @config_app.command("set")
 def config_set(
-    key: str = typer.Argument(..., help="Configuration key (dot-notation)."),
-    value: str = typer.Argument(..., help="Value to set."),
-    system: bool = typer.Option(
-        False,
-        "--system",
-        help="Write to system-wide config instead of user config.",
-    ),
+    key: str = typer.Argument(help="Configuration key (e.g. 'organization', 'registry')."),
+    value: str = typer.Argument(help="Value to set."),
 ) -> None:
-    """Set a configuration value.
-
-    By default, writes to user config (~/.config/absconda/config.yaml).
-    Use --system to write to system config (/etc/xdg/absconda/config.yaml).
-    """
-    # Try to parse value as YAML for proper typing
-    import yaml
-
+    """Set an absconda configuration value in ~/.config/absconda/config.yaml."""
     from . import config as cfg
 
-    try:
-        parsed_value = yaml.safe_load(value)
-    except yaml.YAMLError:
-        parsed_value = value
-
-    try:
-        path = cfg.set_config_value(key, parsed_value, system=system)
-        console.print(f"Set {key}={parsed_value} in {path}")
-    except cfg.ConfigError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
-
-
-@config_app.command("unset")
-def config_unset(
-    key: str = typer.Argument(..., help="Configuration key to remove (dot-notation)."),
-    system: bool = typer.Option(
-        False,
-        "--system",
-        help="Remove from system-wide config instead of user config.",
-    ),
-) -> None:
-    """Remove a configuration value.
-
-    By default, removes from user config (~/.config/absconda/config.yaml).
-    Use --system to remove from system config (/etc/xdg/absconda/config.yaml).
-    """
-    from . import config as cfg
-
-    try:
-        path = cfg.unset_config_value(key, system=system)
-        if path:
-            console.print(f"Removed {key} from {path}")
-        else:
-            console.print(f"Key '{key}' not found.")
-            raise typer.Exit(1)
-    except cfg.ConfigError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
-
-
-@config_app.command("edit")
-def config_edit(
-    system: bool = typer.Option(
-        False,
-        "--system",
-        help="Edit system-wide config instead of user config.",
-    ),
-) -> None:
-    """Open the configuration file in an editor.
-
-    Uses $EDITOR or $VISUAL environment variable, falling back to 'vi'.
-    """
-    import os
-    import subprocess
-
-    from . import config as cfg
-
-    path = cfg.get_system_config_path() if system else cfg.get_user_config_path()
-
-    # Create parent directory and empty file if needed
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "# Absconda configuration\n# See: https://github.com/swarbricklab/absconda\n\n"
+    allowed_keys = {"registry", "organization", "default_remote_builder"}
+    if key not in allowed_keys:
+        console.print(
+            f"[red]Error:[/red] Unknown config key '{key}'. "
+            f"Allowed keys: {', '.join(sorted(allowed_keys))}"
         )
+        raise typer.Exit(code=1)
 
-    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-
-    try:
-        subprocess.run([editor, str(path)], check=True)
-    except FileNotFoundError as exc:
-        console.print(f"[red]Error:[/red] Editor '{editor}' not found.")
-        raise typer.Exit(1) from exc
-    except subprocess.CalledProcessError as exc:
-        console.print(f"[red]Error:[/red] Editor exited with code {exc.returncode}")
-        raise typer.Exit(1) from exc
+    cfg.set_config_value(key, value)
+    console.print(f"Set [cyan]{key}[/cyan] = [green]{value}[/green]")
 
 
-@config_app.command("paths")
-def config_paths() -> None:
-    """Show configuration file paths and their status."""
+@config_app.command("path")
+def config_path() -> None:
+    """Show the path to the user configuration file."""
     from . import config as cfg
 
-    console.print("[bold]Configuration file search order:[/bold]\n")
-
-    for config_dir in cfg.get_config_dirs():
-        config_file = config_dir / "config.yaml"
-        if config_file.exists():
-            console.print(f"  [green]✓[/green] {config_file}")
-        else:
-            console.print(f"  [dim]✗ {config_file}[/dim]")
-
-    console.print()
-    console.print(f"[bold]User config:[/bold] {cfg.get_user_config_path()}")
-    console.print(f"[bold]System config:[/bold] {cfg.get_system_config_path()}")
+    path = cfg.get_user_config_path()
+    console.print(str(path))
 
 
-if __name__ == "__main__":  # pragma: no cover
-    app()
+# ---------------------------------------------------------------------------
+# ─── singularity subcommand ────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def pull(
+    repository: str = typer.Option(
+        ...,
+        "--repository",
+        help="Full image reference to pull, e.g. ghcr.io/org/name:tag.",
+    ),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Path for the SIF output file.",
+    ),
+) -> None:
+    """Pull a container image and convert to Singularity SIF."""
+    sif_uri = f"docker://{repository}"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _run_command(["singularity", "pull", "--force", str(output), sif_uri])
+    console.print(f"[green]Pulled SIF:[/green] {output}")

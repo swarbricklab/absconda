@@ -40,10 +40,30 @@ jobs:
       - name: Install absconda
         run: pip install .
 
+      - name: Resolve image tag from project version
+        run: |
+          VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+          echo "IMAGE_TAG=$VERSION" >> "$GITHUB_ENV"
+
       - name: Publish image via remote builder
         run: |
           absconda publish \
             --file examples/absconda-env.yaml \
             --repository ghcr.io/swarbricklab/absconda \
+            --tag "$IMAGE_TAG" \
             --remote-builder gcp-builder \
             --remote-off
+
+      - name: Deploy to NCI
+        run: |
+          ABSCONDA_BIN=$(which absconda)
+          IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"
+
+          qx --mod singularity --mem 4GB --cpus 2 --runtime 30m -- \
+            "$ABSCONDA_BIN" deploy "$IMAGE_REF" \
+              --commands absconda,gcloud,ssh,git \
+              --runtime singularity \
+              --image-cache /apps/swarbricklab/sif-cache \
+              --output-dir "/apps/swarbricklab/wrappers/absconda-${IMAGE_TAG}" \
+              --module-dir /apps/swarbricklab/modulefiles \
+              --shims pbs,singularity

@@ -36,6 +36,23 @@ jobs:
           gcloud compute instances start $BUILDER_VM \
             --zone=$GCP_ZONE --project=$GCP_PROJECT
 
+      - name: Wait for SSH
+        run: |
+          echo "Waiting for SSH on $BUILDER_VM..."
+          for i in $(seq 1 30); do
+            if gcloud compute ssh $BUILDER_VM \
+              --zone=$GCP_ZONE --project=$GCP_PROJECT \
+              --tunnel-through-iap \
+              --command="echo ready" 2>/dev/null; then
+              echo "SSH is ready"
+              exit 0
+            fi
+            echo "Attempt $i/30 - waiting 10s..."
+            sleep 10
+          done
+          echo "SSH failed after 30 attempts"
+          exit 1
+
       - name: Upload build context
         run: |
           tar -czf /tmp/context.tar.gz --exclude=.git .

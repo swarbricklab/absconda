@@ -570,8 +570,8 @@ class _RemoteSession:
         commands = [
             "set -euo pipefail",
             f"cd {shlex.quote(self.remote_dir)}",
-            # Build the image with BuildKit
-            f"DOCKER_BUILDKIT=1 docker build {build_args_str}-t {shlex.quote(image_ref)} .",
+            # Build the image with BuildKit (sudo for OS Login users not in docker group)
+            f"DOCKER_BUILDKIT=1 sudo docker build {build_args_str}-t {shlex.quote(image_ref)} .",
         ]
 
         # Push if requested
@@ -583,13 +583,13 @@ class _RemoteSession:
             user_secret = self.definition.ghcr_user_secret
             commands.append(
                 f"gcloud secrets versions access latest --secret={shlex.quote(token_secret)} | "
-                f"docker login {shlex.quote(registry)} "
+                f"sudo docker login {shlex.quote(registry)} "
                 f"-u $(gcloud secrets versions access latest --secret={shlex.quote(user_secret)}) "
                 "--password-stdin"
             )
-            commands.append(f"docker push {shlex.quote(image_ref)}")
+            commands.append(f"sudo docker push {shlex.quote(image_ref)}")
             # Clean up credentials after push to avoid storing them on disk
-            commands.append(f"docker logout {shlex.quote(registry)}")
+            commands.append(f"sudo docker logout {shlex.quote(registry)}")
 
         cmd = _remote_shell_command(self.definition, " && ".join(commands))
         try:

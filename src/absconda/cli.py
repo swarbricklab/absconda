@@ -300,9 +300,7 @@ def _run_command(command: list[str], *, cwd: Optional[Path] = None) -> None:
 
 
 # Pattern matching harmless xattr warnings from singularity pull
-_SINGULARITY_NOISE_RE = re.compile(
-    r"(EPERM on setxattr|user\.rootlesscontainers)"
-)
+_SINGULARITY_NOISE_RE = re.compile(r"(EPERM on setxattr|user\.rootlesscontainers)")
 
 
 def _run_command_filtered(

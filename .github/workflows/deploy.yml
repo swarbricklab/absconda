@@ -40,6 +40,9 @@ jobs:
       - name: Install absconda
         run: pip install .
 
+      - name: Upgrade qxub to latest
+        run: /opt/qxub-venv/bin/pip install --force-reinstall --no-deps git+https://github.com/swarbricklab/qxub.git
+
       - name: Resolve image tag from project version
         run: |
           VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)

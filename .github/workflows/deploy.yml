@@ -61,4 +61,5 @@ jobs:
           qxub exec --mod absconda --mem 4GB --resources jobfs=4GB --internet -- \
             absconda deploy "$IMAGE_REF" \
               --commands absconda,gcloud \
+              --env-dir /opt/conda/envs/absconda \
               --shims singularity

@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -291,6 +292,42 @@ def _run_command(command: list[str], *, cwd: Optional[Path] = None) -> None:
     try:
         subprocess.run(command, check=True, cwd=str(cwd) if cwd else None)
     except FileNotFoundError as exc:  # pragma: no cover - depends on host setup
+        console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
+        raise typer.Exit(code=1) from exc
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]Command failed:[/red] {' '.join(command)}")
+        raise typer.Exit(code=exc.returncode) from exc
+
+
+# Pattern matching harmless xattr warnings from singularity pull
+_SINGULARITY_NOISE_RE = re.compile(
+    r"(EPERM on setxattr|user\.rootlesscontainers)"
+)
+
+
+def _run_command_filtered(
+    command: list[str],
+    *,
+    cwd: Optional[Path] = None,
+    noise_re: Optional[re.Pattern[str]] = None,
+) -> None:
+    """Run a command, optionally filtering matching lines from stderr."""
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(cwd) if cwd else None,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stderr is not None  # for type checker
+        for line in proc.stderr:
+            if noise_re and noise_re.search(line):
+                continue
+            sys.stderr.write(line)
+        returncode = proc.wait()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, command)
+    except FileNotFoundError as exc:  # pragma: no cover
         console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
         raise typer.Exit(code=1) from exc
     except subprocess.CalledProcessError as exc:
@@ -1267,7 +1304,10 @@ def _deploy_image(
         image_cache.mkdir(parents=True, exist_ok=True)
         sif_path = image_cache / sif_filename
         console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
-        _run_command(["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"])
+        _run_command_filtered(
+            ["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"],
+            noise_re=_SINGULARITY_NOISE_RE,
+        )
         console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
 
     # Parse command list (needed by both wrappers and module)

@@ -605,7 +605,11 @@ def test_deploy_pulls_and_wraps(monkeypatch, tmp_path: Path) -> None:
     def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
         commands.append((command, cwd))
 
+    def fake_run_filtered(command: list[str], *, cwd: Path | None = None, noise_re=None) -> None:
+        commands.append((command, cwd))
+
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._run_command_filtered", fake_run_filtered)
 
     wrapper_dir = tmp_path / "wrappers"
     module_dir = tmp_path / "modules"

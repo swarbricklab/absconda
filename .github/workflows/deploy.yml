@@ -58,7 +58,7 @@ jobs:
       - name: Deploy to NCI
         run: |
           IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"
-          qxub exec --mod absconda --mem 4GB --resources jobfs=4GB --internet -- \
+          qxub exec -v --mod absconda --mem 4GB --resources jobfs=4GB --internet -- \
             absconda deploy "$IMAGE_REF" \
               --commands absconda,gcloud \
               --env-dir /opt/conda/envs/absconda \

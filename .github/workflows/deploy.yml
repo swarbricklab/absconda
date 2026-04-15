@@ -54,7 +54,7 @@ jobs:
             --remote-builder gcp-builder \
             --remote-off
 
-      # Bootstrap deployment method. Later we can just qx -- absconda deploy
+      # Verbose qxub logging
       - name: Deploy to NCI
         run: |
           IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"

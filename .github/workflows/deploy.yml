@@ -57,26 +57,29 @@ jobs:
             --remote-builder gcp-builder \
             --remote-off
 
+      - name: Fetch GHCR token from Secret Manager
+        run: |
+          GHCR_TOKEN=$(gcloud secrets versions access latest \
+            --secret=absconda-github-token \
+            --project="$GCP_PROJECT")
+          CRED_FILE=$(mktemp)
+          echo "$GHCR_TOKEN" > "$CRED_FILE"
+          chmod 600 "$CRED_FILE"
+          echo "GHCR_CRED_FILE=$CRED_FILE" >> "$GITHUB_ENV"
+
       # Verbose qxub logging
       - name: Deploy to NCI
         run: |
           IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"
 
-          # Write GHCR credentials to a temp file for the compute node
-          CRED_FILE=$(mktemp)
-          echo "$GHCR_TOKEN" > "$CRED_FILE"
-          chmod 600 "$CRED_FILE"
-
           qxub exec -v --mod absconda --mem 4GB --resources jobfs=4GB --internet -- \
             bash -c "
               export SINGULARITY_DOCKER_USERNAME=swarbricklab
-              export SINGULARITY_DOCKER_PASSWORD=\$(cat $CRED_FILE)
+              export SINGULARITY_DOCKER_PASSWORD=\$(cat $GHCR_CRED_FILE)
               absconda deploy '$IMAGE_REF' \
                 --commands absconda,gcloud \
                 --env-dir /opt/conda/envs/absconda \
                 --shims singularity
             "
 
-          rm -f "$CRED_FILE"
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          rm -f "$GHCR_CRED_FILE"

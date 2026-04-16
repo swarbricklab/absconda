@@ -42,6 +42,13 @@ MOUNTS+=("-B" "{{ bind_spec }}")
 {% endfor %}
 {% endif %}
 
+# Bind-mount host CA certificates so TLS verification works inside the container
+_CA_BUNDLE="/etc/pki/tls/certs/ca-bundle.crt"
+if [[ -f "$_CA_BUNDLE" ]]; then
+    MOUNTS+=("-B" "$_CA_BUNDLE:$_CA_BUNDLE:ro")
+    export SINGULARITYENV_SSL_CERT_FILE="$_CA_BUNDLE"
+fi
+
 {% if gpu %}
 # GPU support
 GPU_FLAG="--nv"

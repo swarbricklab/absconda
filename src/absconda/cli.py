@@ -1296,6 +1296,13 @@ def _deploy_image(
 
     name_tag = _image_name_tag(image_ref)
 
+    # Auto-derive env_dir from policy env_prefix and image name
+    if env_dir is None:
+        policy_resolution = _active_policy()
+        env_prefix = policy_resolution.profile.env_prefix or "/opt/conda/envs"
+        image_name = name_tag.split("/")[0]
+        env_dir = f"{env_prefix}/{image_name}"
+
     # --- Step 1: Pull SIF ---
     if runtime == "singularity":
         sif_filename = f"{_sanitize_image_name(image_ref)}.sif"
@@ -1937,6 +1944,13 @@ def wrap(
     if not command_list:
         console.print("[red]Error:[/red] No commands specified")
         raise typer.Exit(1)
+
+    # Auto-derive env_dir from policy env_prefix and image name
+    if env_dir is None:
+        policy_resolution = _active_policy()
+        env_prefix = policy_resolution.profile.env_prefix or "/opt/conda/envs"
+        image_name = _image_name_tag(image).split("/")[0]
+        env_dir = f"{env_prefix}/{image_name}"
 
     # Determine output directory
     if output_dir is None:

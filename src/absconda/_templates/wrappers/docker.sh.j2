@@ -10,6 +10,31 @@ MOUNTS=()
 MOUNTS+=("-v" "{{ mount }}:{{ mount }}")
 {% endfor %}
 
+ENV_ARGS=()
+{% for env_name in env_passthrough %}
+if printenv "{{ env_name }}" >/dev/null 2>&1; then
+    ENV_ARGS+=("-e" "{{ env_name }}")
+fi
+{% endfor %}
+
+if [[ -n "${ABSCONDA_ENV_PASSTHROUGH:-}" ]]; then
+    IFS=',' read -r -a runtime_env_names <<< "$ABSCONDA_ENV_PASSTHROUGH"
+    for env_name in "${runtime_env_names[@]}"; do
+        if [[ -n "$env_name" && -n "${!env_name+x}" ]]; then
+            ENV_ARGS+=("-e" "$env_name")
+        fi
+    done
+fi
+
+if [[ -n "${ABSCONDA_ENV_SET:-}" ]]; then
+    IFS=',' read -r -a runtime_env_pairs <<< "$ABSCONDA_ENV_SET"
+    for env_assignment in "${runtime_env_pairs[@]}"; do
+        if [[ -n "$env_assignment" && "$env_assignment" == *=* ]]; then
+            ENV_ARGS+=("-e" "$env_assignment")
+        fi
+    done
+fi
+
 {% if gpu %}
 # GPU support
 GPU_FLAG="--gpus all"
@@ -21,6 +46,7 @@ GPU_FLAG=""
 exec docker run --rm -i \
     $GPU_FLAG \
     "${MOUNTS[@]}" \
+    "${ENV_ARGS[@]}" \
     -w "$(pwd)" \
     {{ image_ref }} \
     {{ command }} "$@"

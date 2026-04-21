@@ -211,6 +211,7 @@ def generate_wrappers(config: WrapperConfig) -> dict[str, Path]:
             "image_ref": config.image_ref,
             "command": command,
             "mounts": config.extra_mounts,
+            "env_passthrough": config.env_passthrough,
             "gpu": config.gpu,
             "sif_filename": sif_filename,
             "image_cache": str(config.image_cache) if config.image_cache else None,

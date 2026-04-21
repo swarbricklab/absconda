@@ -42,6 +42,38 @@ MOUNTS+=("-B" "{{ bind_spec }}")
 {% endfor %}
 {% endif %}
 
+ENV_NAMES=(
+{% for env_name in env_passthrough %}
+    "{{ env_name }}"
+{% endfor %}
+)
+
+for env_name in "${ENV_NAMES[@]}"; do
+    if [[ -n "${!env_name+x}" ]]; then
+        export "SINGULARITYENV_${env_name}=${!env_name}"
+    fi
+done
+
+if [[ -n "${ABSCONDA_ENV_PASSTHROUGH:-}" ]]; then
+    IFS=',' read -r -a runtime_env_names <<< "$ABSCONDA_ENV_PASSTHROUGH"
+    for env_name in "${runtime_env_names[@]}"; do
+        if [[ -n "$env_name" && -n "${!env_name+x}" ]]; then
+            export "SINGULARITYENV_${env_name}=${!env_name}"
+        fi
+    done
+fi
+
+if [[ -n "${ABSCONDA_ENV_SET:-}" ]]; then
+    IFS=',' read -r -a runtime_env_pairs <<< "$ABSCONDA_ENV_SET"
+    for env_assignment in "${runtime_env_pairs[@]}"; do
+        if [[ -n "$env_assignment" && "$env_assignment" == *=* ]]; then
+            env_name="${env_assignment%%=*}"
+            env_value="${env_assignment#*=}"
+            export "SINGULARITYENV_${env_name}=${env_value}"
+        fi
+    done
+fi
+
 {% if gpu %}
 # GPU support
 GPU_FLAG="--nv"

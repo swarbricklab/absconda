@@ -168,8 +168,6 @@ def test_wrapper_with_custom_mounts():
 
 def test_wrapper_with_env_passthrough():
     """Test wrapper with environment variable passthrough."""
-    # NOTE: env_passthrough is currently defined but not implemented in templates
-    # This test documents the intended behavior for future implementation
     with tempfile.TemporaryDirectory() as tmpdir:
         config = WrapperConfig(
             image_ref="test:latest",
@@ -182,10 +180,38 @@ def test_wrapper_with_env_passthrough():
             gpu=False,
         )
 
-        # env_passthrough not yet in templates, just check wrapper works
         result = generate_wrappers(config)
         assert "python" in result
-        # TODO: Once env passthrough is implemented, check for SINGULARITYENV_MY_VAR etc
+
+        content = (Path(tmpdir) / "python").read_text()
+        assert '"MY_VAR"' in content
+        assert '"ANOTHER_VAR"' in content
+        assert 'export "SINGULARITYENV_${env_name}=${!env_name}"' in content
+        assert "ABSCONDA_ENV_PASSTHROUGH" in content
+        assert "ABSCONDA_ENV_SET" in content
+
+
+def test_docker_wrapper_with_env_passthrough():
+    """Test Docker wrapper emits env passthrough and runtime env hooks."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = WrapperConfig(
+            image_ref="test:latest",
+            commands=["python"],
+            runtime="docker",
+            output_dir=Path(tmpdir),
+            image_cache=None,
+            extra_mounts=[],
+            env_passthrough=["MY_VAR", "ANOTHER_VAR"],
+            gpu=False,
+        )
+
+        generate_wrappers(config)
+        content = (Path(tmpdir) / "python").read_text()
+        assert "ENV_ARGS=()" in content
+        assert '"-e" "MY_VAR"' in content
+        assert '"-e" "ANOTHER_VAR"' in content
+        assert "ABSCONDA_ENV_PASSTHROUGH" in content
+        assert "ABSCONDA_ENV_SET" in content
 
 
 def test_wrapper_with_custom_image_cache():

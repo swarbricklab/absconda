@@ -12,7 +12,7 @@ HPC systems like NCI Gadi use **Singularity/Apptainer** for containers and **Env
 ## Workflow
 
 ```
-Build Image → Create Singularity Image → Generate Wrappers → Create Module → Deploy
+Build & Push Image → Pull SIF → Generate Wrappers → Create Module → Deploy
 ```
 
 ## Step 1: Build Your Image
@@ -27,14 +27,12 @@ absconda build \
   --push
 ```
 
-Or build with Singularity output directly:
+Then deploy the image to your HPC environment:
 
 ```bash
-absconda publish \
-  --file environment.yaml \
-  --repository ghcr.io/myorg/myenv \
-  --tag 1.0.0 \
-  --singularity-out myenv-1.0.0.sif
+absconda deploy ghcr.io/myorg/myenv:1.0.0 \
+  --commands python,pip,jupyter \
+  --shims pbs,singularity
 ```
 
 ## Step 2: Generate Wrapper Scripts
@@ -84,6 +82,15 @@ absconda wrap \
 
 Adds `--nv` flag for NVIDIA GPU support.
 
+### With Runtime Env Injection
+
+Generated wrappers bake in configured env passthrough variables, and can also be extended at runtime without regeneration:
+
+```bash
+ABSCONDA_ENV_PASSTHROUGH=XDG_CONFIG_DIRS,XDG_CACHE_HOME ./wrappers/python --version
+ABSCONDA_ENV_SET=XDG_CONFIG_DIRS=/g/data/a56/config/xdg ./wrappers/python --version
+```
+
 ### Custom SIF Cache
 
 ```bash
@@ -99,12 +106,7 @@ absconda wrap \
 
 Generated wrapper scripts:
 
-1. **Pull SIF on first use**:
-   ```bash
-   if [[ ! -f "$SIF_FILE" ]]; then
-       singularity pull "$SIF_FILE" docker://ghcr.io/myorg/myenv:1.0.0
-   fi
-   ```
+1. **Assume the SIF has already been pulled** by `absconda deploy` into the configured image cache.
 
 2. **Mount required paths**:
    ```bash
@@ -113,7 +115,13 @@ Generated wrapper scripts:
    MOUNTS+=("-B" "/g/data/$PROJECT")
    ```
 
-3. **Execute command**:
+3. **Set explicit container environment**:
+  ```bash
+  export SINGULARITYENV_PATH="/opt/conda/envs/myenv/bin:/opt/conda/bin:/usr/bin:/bin"
+  export SINGULARITYENV_XDG_CONFIG_DIRS="$XDG_CONFIG_DIRS"
+  ```
+
+4. **Execute command**:
    ```bash
    exec singularity exec ${MOUNTS[@]} "$SIF_FILE" python "$@"
    ```
@@ -223,41 +231,15 @@ absconda build \
   --push
 ```
 
-### 2. Generate Wrappers Locally
+### 2. Deploy to Gadi
 
 ```bash
-absconda wrap \
-  --image ghcr.io/mylab/analysis:2025.12.03 \
-  --commands python,pip,jupyter,R,Rscript \
-  --runtime singularity \
-  --output-dir ./wrappers \
-  --extra-mounts '/g/data/xy99,/scratch/xy99'
-```
-
-### 3. Generate Module Locally
-
-```bash
-absconda module \
-  --name analysis/2025.12.03 \
-  --wrapper-dir ./wrappers \
-  --output-dir ./modulefiles \
-  --description "Analysis environment for XY99 project" \
-  --image ghcr.io/mylab/analysis:2025.12.03 \
-  --runtime singularity \
-  --commands python,pip,jupyter,R,Rscript
-```
-
-### 4. Deploy to Gadi
-
-```bash
-# Copy to shared project space
-scp -r wrappers modulefiles username@gadi.nci.org.au:/g/data/xy99/modules/
-
-# SSH to Gadi
+# SSH to Gadi and deploy
 ssh username@gadi.nci.org.au
-
-# Add module path
-module use /g/data/xy99/modules/modulefiles
+absconda deploy ghcr.io/mylab/analysis:2025.12.03 \
+  --commands python,pip,jupyter,R,Rscript \
+  --extra-mounts '/g/data/xy99,/scratch/xy99' \
+  --shims pbs,singularity
 
 # Load and use
 module load analysis/2025.12.03

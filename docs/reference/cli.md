@@ -16,7 +16,7 @@ Show version and exit.
 
 ```bash
 absconda --version
-# Output: Absconda 0.1.0
+# Output: Absconda 0.2.4
 ```
 
 ### --policy PATH
@@ -248,44 +248,88 @@ Image pushed: ghcr.io/org/myenv:v1.0
 
 ### publish
 
-Build, push, and optionally create Singularity artifact.
+Build and push a container image.
 
 ```bash
 absconda publish [OPTIONS]
 ```
 
-Same options as `build`, plus:
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--singularity-out PATH` | Output .sif file path | - |
-
-**Note**: `--push` is automatic with publish command.
+Same options as `build`, except `publish` always pushes the resulting image.
 
 **Examples**:
 
 ```bash
-# Build, push, and pull Singularity image
+# Build and push an image
 absconda publish \
   --file env.yaml \
   --repository ghcr.io/org/myenv \
-  --tag v1.0 \
-  --singularity-out myenv.sif
+  --tag v1.0
 
-# Remote build with Singularity
+# Remote build and push
 absconda publish \
   --file env.yaml \
   --remote-builder gcp-builder \
-  --singularity-out myenv.sif
+  --repository ghcr.io/org/myenv \
+  --tag v1.0
 ```
 
 **Output**:
 
 ```
 Image pushed: ghcr.io/org/myenv:v1.0
-INFO:    Converting OCI blobs to SIF format
-INFO:    Starting build...
-Singularity image written to myenv.sif
+```
+
+---
+
+### deploy
+
+Pull a container image, generate wrappers, and create a module file.
+
+```bash
+absconda deploy [IMAGE] [OPTIONS]
+```
+
+`deploy` supports two modes:
+
+- Provide `IMAGE` to deploy an existing image.
+- Provide `--file`, `--tarball`, or `--requirements` to build, push, then deploy.
+
+**Deploy Options**:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--commands LIST` | Comma-separated commands to wrap | Required unless `--no-wrap` |
+| `--runtime RUNTIME` | Container runtime (`singularity` or `docker`) | Config default |
+| `--image-cache PATH` | Directory for pulled SIF images | Config or `~/.local/absconda/sif-cache` |
+| `--output-dir PATH` | Wrapper output directory | Config or `~/.local/absconda/wrappers/<image>` |
+| `--module-dir PATH` | Module output directory | Config or `~/.local/absconda/modulefiles` |
+| `--extra-mounts LIST` | Additional mount paths | Config defaults |
+| `--env LIST` | Additional env vars to bake into wrappers | Config defaults |
+| `--env-dir PATH` | Conda environment path inside container | Auto-derived from policy env prefix + image name |
+| `--shims LIST` | Shim groups to inject (`pbs`, `singularity`) | - |
+| `--gpu` | Enable GPU support | `false` |
+| `--no-wrap` | Skip wrapper generation | `false` |
+| `--no-module` | Skip module file generation | `false` |
+
+**Examples**:
+
+```bash
+# Deploy an existing image
+absconda deploy ghcr.io/org/myenv:20260421 \
+  --commands python,pip,jupyter \
+  --shims pbs,singularity
+
+# Full pipeline: build, push, then deploy
+absconda deploy \
+  --file env.yaml \
+  --repository ghcr.io/org/myenv \
+  --tag v1.0 \
+  --remote-builder gcp-builder \
+  --commands python,pip,jupyter
+
+# Override or extend env vars at runtime without regenerating wrappers
+ABSCONDA_ENV_PASSTHROUGH=XDG_CONFIG_DIRS,XDG_CACHE_HOME python --version
+ABSCONDA_ENV_SET=XDG_CONFIG_DIRS=/g/data/a56/config/xdg python --version
 ```
 
 ---
@@ -318,7 +362,9 @@ absconda wrap [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--extra-mounts LIST` | Comma-separated mount paths | Config defaults |
-| `--env LIST` | Comma-separated env vars to pass through | Config defaults |
+| `--env LIST` | Comma-separated env vars to bake into wrapper passthrough | Config defaults |
+| `--env-dir PATH` | Conda environment path inside container | Auto-derived from policy env prefix + image name |
+| `--shims LIST` | Shim groups to inject (`pbs`, `singularity`) | - |
 | `--gpu` | Enable GPU support | `false` |
 
 **Examples**:
@@ -348,6 +394,12 @@ absconda wrap \
   --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT \
   --env PBS_JOBID,TMPDIR
 
+# Add PBS and Singularity shims for HPC wrappers
+absconda wrap \
+  --image ghcr.io/org/myenv:v1.0 \
+  --commands python,pip \
+  --shims pbs,singularity
+
 # Custom output directory
 absconda wrap \
   --image ghcr.io/org/myenv:v1.0 \
@@ -372,6 +424,13 @@ Next steps:
   1. Add /Users/user/.local/absconda/wrappers/myenv to your PATH, or
   2. Generate a module file with: absconda module --wrapper-dir /Users/user/.local/absconda/wrappers/myenv
 ```
+
+**Environment passthrough behavior**:
+
+- `--env` and `wrappers.env_passthrough` are baked into generated wrappers.
+- At runtime, wrappers can be extended without regeneration using:
+  - `ABSCONDA_ENV_PASSTHROUGH=VAR1,VAR2`
+  - `ABSCONDA_ENV_SET=KEY1=value1,KEY2=value2`
 
 ---
 
@@ -517,6 +576,48 @@ absconda remote stop BUILDER [--config PATH]
 
 ```bash
 absconda remote stop gcp-builder
+```
+
+---
+
+## Config Commands
+
+### config list
+
+```bash
+absconda config list [--show-origin]
+```
+
+### config get
+
+```bash
+absconda config get wrappers.env_passthrough
+```
+
+### config set
+
+```bash
+absconda config set wrappers.env_passthrough '["USER","HOME","XDG_CONFIG_DIRS"]'
+absconda config set --system wrappers.default_output_dir /g/data/a56/software/singularity/wrappers
+```
+
+### config unset
+
+```bash
+absconda config unset wrappers.env_passthrough
+```
+
+### config edit
+
+```bash
+absconda config edit
+absconda config edit --system
+```
+
+### config paths
+
+```bash
+absconda config paths
 ```
 
 ---

@@ -280,14 +280,18 @@ wrappers:
 | `default_output_dir` | string | `~/.local/absconda/wrappers/<image>` | Wrapper script directory |
 | `image_cache` | string | `~/.local/absconda/sif-cache` | SIF cache (Singularity only) |
 | `default_mounts` | list | `[$HOME, $PWD]` | Default volume mounts |
-| `env_passthrough` | list | `[USER, HOME, LANG, TZ]` | Environment variables to pass through |
-| `env_filter` | list | `[PATH, LD_LIBRARY_PATH, PYTHONPATH]` | Environment variables to NOT pass through |
+| `env_passthrough` | list | `[USER, HOME, LANG, TZ]` | Environment variables baked into generated wrappers |
+| `env_filter` | list | `[PATH, LD_LIBRARY_PATH, PYTHONPATH]` | Reserved for future filtering behavior |
 
 **Mount paths**: Can use environment variables (e.g., `$PROJECT`, `$USER`).
 
 **Environment passthrough**:
-- `env_passthrough`: Variables explicitly passed to container
-- `env_filter`: Variables explicitly blocked from container
+- `env_passthrough` is applied when wrappers are generated, not read dynamically later.
+- After changing `wrappers.env_passthrough`, re-run `absconda wrap` or `absconda deploy` to regenerate wrappers.
+- Generated wrappers can also be extended at runtime without regeneration:
+  - `ABSCONDA_ENV_PASSTHROUGH=VAR1,VAR2`
+  - `ABSCONDA_ENV_SET=KEY1=value1,KEY2=value2`
+- `env_filter` is present in the config schema but is not currently enforced by wrapper templates.
 
 ### Module Settings
 
@@ -373,6 +377,7 @@ wrappers:
     - LANG
     - TZ
     - TMPDIR
+    - XDG_CONFIG_DIRS
     - PBS_JOBID
     - PBS_JOBNAME
     - PBS_QUEUE
@@ -437,11 +442,8 @@ wrappers:
 To see which config files are loaded:
 
 ```bash
-# Check config directories
-python3 -c "from absconda.config import get_config_dirs; print('\n'.join(str(d) for d in get_config_dirs()))"
-
-# Load and inspect config
-python3 -c "from absconda.config import load_config; import pprint; pprint.pprint(load_config().__dict__)"
+absconda config paths
+absconda config list --show-origin
 ```
 
 ## Best Practices
@@ -507,9 +509,22 @@ done
 
 Later files override earlier ones.
 
-### Environment variables not working
+### Wrapper env vars not updating
 
-Environment variables only override specific fields (GCP settings, policy). Use config file for other settings.
+`wrappers.env_passthrough` is baked into wrapper scripts when they are generated. If you change config and existing wrappers still behave the old way, regenerate them:
+
+```bash
+absconda deploy ghcr.io/org/myenv:tag --commands python,pip
+# or
+absconda wrap --image ghcr.io/org/myenv:tag --commands python,pip
+```
+
+For one-off runtime additions, use:
+
+```bash
+ABSCONDA_ENV_PASSTHROUGH=XDG_CONFIG_DIRS,XDG_CACHE_HOME python --version
+ABSCONDA_ENV_SET=XDG_CONFIG_DIRS=/g/data/a56/config/xdg python --version
+```
 
 ## Next Steps
 

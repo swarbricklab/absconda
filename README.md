@@ -69,26 +69,16 @@ docker run --rm ghcr.io/myorg/my-analysis:latest python -c "import numpy; print(
 **For HPC with Singularity:**
 
 ```bash
-# Build and push Docker image, then convert to Singularity
+# Build and push the image
 absconda publish \
   --file environment.yaml \
   --repository ghcr.io/myorg/my-analysis \
-  --tag latest \
-  --singularity-out my-analysis.sif
+  --tag latest
 
-# Or manually convert after building
-absconda build \
-  --file environment.yaml \
-  --repository ghcr.io/myorg/my-analysis \
-  --tag latest \
-  --push
-
-singularity pull my-analysis.sif docker://ghcr.io/myorg/my-analysis:latest
-
-# Generate HPC module and wrappers
-absconda module \
-  --image my-analysis.sif \
-  --module-path /apps/modules/my-analysis/1.0
+# Pull the SIF, generate wrappers, and create a module file
+absconda deploy ghcr.io/myorg/my-analysis:latest \
+  --commands python,pip,jupyter \
+  --shims pbs,singularity
 ```
 
 See the [Quick Start Guide](docs/getting-started/quickstart.md) for a complete walkthrough.
@@ -186,18 +176,14 @@ absconda build \
   --remote-builder gcp-builder \
   --push
 
-# 2. Convert to Singularity on HPC
+# 2. Deploy on HPC
 ssh gadi.nci.org.au
-singularity pull rnaseq.sif docker://ghcr.io/lab/rnaseq:v1.0
+absconda deploy ghcr.io/lab/rnaseq:v1.0 \
+  --commands python,pip,R,Rscript \
+  --shims pbs,singularity
 
-# 3. Generate module file
-absconda module \
-  --image /apps/rnaseq/v1.0/rnaseq.sif \
-  --module-path /apps/Modules/modulefiles/rnaseq/1.0 \
-  --wrapper-dir /apps/rnaseq/v1.0/wrappers
-
-# 4. Use in PBS job
-module load rnaseq/1.0
+# 3. Use in PBS job
+module load rnaseq/v1.0
 python analysis.py  # Uses containerized environment transparently
 ```
 
@@ -237,7 +223,7 @@ The result: reproducible, optimized, compliant environments deployed consistentl
 
 Absconda is production-ready and actively maintained. It powers scientific computing workflows for research teams at the Garvan Institute and beyond.
 
-**Current version**: 0.2.1  
+**Current version**: 0.2.4  
 **Python support**: 3.11, 3.12, 3.13+  
 **License**: MIT
 

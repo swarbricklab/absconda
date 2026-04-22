@@ -130,17 +130,17 @@ singularity build bioinfo-workflow.sif docker://ghcr.io/yourusername/bioinfo-wor
 
 **Output**: `bioinfo-workflow.sif` (~1.5 GB)
 
-### Using Absconda Publish
+### Using Absconda Deploy
 
 ```bash
-absconda publish \
+absconda deploy \
   --file bioinfo-workflow-env.yaml \
   --repository ghcr.io/yourusername/bioinfo-workflow \
   --tag 1.0.0 \
-  --singularity-out bioinfo-workflow.sif
+  --commands python,R,snakemake
 ```
 
-This combines build + convert in one step.
+This builds, pushes, pulls as Singularity, and generates wrappers and a module in one step.
 
 ## Step 4: Transfer to HPC
 

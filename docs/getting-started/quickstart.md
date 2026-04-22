@@ -102,13 +102,14 @@ docker login ghcr.io
 ### Create a Singularity Image for HPC
 
 ```bash
-absconda publish \
+# Build, push, pull SIF, and generate wrappers + module in one step
+absconda deploy \
   --file environment.yaml \
   --repository ghcr.io/yourusername/myenv \
-  --singularity-out myenv.sif
+  --commands python,pip
 ```
 
-This pushes to a registry and converts to a `.sif` file for HPC systems.
+This builds and pushes to a registry, pulls as a Singularity image, and generates wrapper scripts and a module file for HPC use. See [HPC Deployment](../guides/hpc-deployment.md) for details.
 
 ### Use Remote Builders
 

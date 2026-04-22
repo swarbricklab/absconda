@@ -444,14 +444,15 @@ docker run --rm --gpus all \
 
 ## Step 7: HPC Deployment
 
-### Build for HPC
+### Build and Deploy to HPC
 
 ```bash
-absconda publish \
+absconda deploy \
   --file pytorch-gpu-env.yaml \
   --repository ghcr.io/yourusername/pytorch-gpu \
   --tag 2.1.0-cuda12.1 \
-  --singularity-out pytorch-gpu.sif
+  --commands python \
+  --gpu
 ```
 
 ### Deploy to HPC

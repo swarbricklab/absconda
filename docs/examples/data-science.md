@@ -224,47 +224,35 @@ print(f'Accuracy: {clf.score(iris.data, iris.target):.2f}')
 
 ## Step 5: HPC Deployment
 
-### Build and Convert to Singularity
+### Build, Push, and Deploy to HPC
+
+```bash
+# Build, push, pull SIF, generate wrappers and module in one step
+absconda deploy \
+  --file data-science-env.yaml \
+  --repository ghcr.io/yourusername/data-science \
+  --tag 2024.01 \
+  --commands python,jupyter,ipython \
+  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT \
+  --output-dir ./wrappers \
+  --module-dir ./modulefiles
+```
+
+Or run publish + deploy separately:
 
 ```bash
 # Build and push
 absconda publish \
   --file data-science-env.yaml \
   --repository ghcr.io/yourusername/data-science \
-  --tag 2024.01 \
-  --singularity-out data-science.sif
-```
+  --tag 2024.01
 
-**Output**:
-
-```
-Image pushed: ghcr.io/yourusername/data-science:2024.01
-INFO:    Converting OCI blobs to SIF format
-INFO:    Starting build...
-Singularity image written to data-science.sif
-```
-
-**SIF size**: ~2 GB
-
-### Generate HPC Wrappers
-
-```bash
-absconda wrap \
-  --image ghcr.io/yourusername/data-science:2024.01 \
+# Deploy from the image reference
+absconda deploy ghcr.io/yourusername/data-science:2024.01 \
   --commands python,jupyter,ipython \
+  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT \
   --output-dir ./wrappers \
-  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT
-```
-
-### Generate Module File
-
-```bash
-absconda module \
-  --name data-science/2024.01 \
-  --wrapper-dir ./wrappers \
-  --description "Python data science stack with Jupyter" \
-  --image ghcr.io/yourusername/data-science:2024.01 \
-  --output-dir ./modulefiles
+  --module-dir ./modulefiles
 ```
 
 ### Deploy to HPC

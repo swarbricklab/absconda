@@ -365,36 +365,28 @@ Analysis complete! Generated files:
 
 ## Step 7: HPC Deployment
 
-### Build for HPC
+### Build and Deploy to HPC
 
 ```bash
-absconda publish \
+# Full pipeline: build, push, pull SIF, generate wrappers and module
+absconda deploy \
   --file r-bioconductor-env.yaml \
   --repository ghcr.io/yourusername/r-bioconductor \
   --tag 4.3.1-bioc3.18 \
-  --singularity-out r-bioconductor.sif
-```
-
-### Generate Wrappers
-
-```bash
-absconda wrap \
-  --image ghcr.io/yourusername/r-bioconductor:4.3.1-bioc3.18 \
   --commands Rscript,R \
+  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT \
   --output-dir wrappers/r-bioconductor \
-  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT
+  --module-dir modulefiles
 ```
 
-### Generate Module
+Or deploy from an existing image:
 
 ```bash
-absconda module \
-  --name r-bioconductor/4.3.1-bioc3.18 \
-  --wrapper-dir wrappers/r-bioconductor \
-  --description "R 4.3.1 with Bioconductor 3.18 (DESeq2, edgeR)" \
-  --image ghcr.io/yourusername/r-bioconductor:4.3.1-bioc3.18 \
+absconda deploy ghcr.io/yourusername/r-bioconductor:4.3.1-bioc3.18 \
   --commands Rscript,R \
-  --output-dir modulefiles
+  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT \
+  --output-dir wrappers/r-bioconductor \
+  --module-dir modulefiles
 ```
 
 ### Deploy to NCI Gadi

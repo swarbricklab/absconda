@@ -427,34 +427,24 @@ labels:
 
 ## HPC Deployment
 
-Build, convert to Singularity, deploy:
+Build, pull as Singularity, generate wrappers and module:
 
 ```bash
-# Build container
-absconda build \
+# Full pipeline with deploy
+absconda deploy \
   --file r-analysis.yaml \
   --repository ghcr.io/org/r-analysis \
   --tag v1.0 \
-  --push
+  --commands Rscript,R \
+  --output-dir wrappers \
+  --module-dir modulefiles
 
-# Generate wrapper
-absconda wrap \
-  --image docker://ghcr.io/org/r-analysis:v1.0 \
-  --command Rscript \
-  --output wrappers/Rscript
-
-# Generate module
-absconda module \
-  --image docker://ghcr.io/org/r-analysis:v1.0 \
-  --version 1.0 \
-  --output modulefiles/r-analysis/1.0
-
-# Deploy to HPC
+# Copy to HPC
 rsync -av wrappers/ gadi:/path/to/wrappers/
 rsync -av modulefiles/ gadi:/path/to/modulefiles/
 
 # Use on HPC
-module load r-analysis/1.0
+module load r-analysis/v1.0
 Rscript my_analysis.R
 ```
 

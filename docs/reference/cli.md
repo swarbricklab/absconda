@@ -16,7 +16,7 @@ Show version and exit.
 
 ```bash
 absconda --version
-# Output: Absconda 0.1.0
+# Output: Absconda 0.2.5
 ```
 
 ### --policy PATH
@@ -190,6 +190,18 @@ absconda build [OPTIONS]
 | `--remote-wait SECONDS` | Wait timeout for busy builder | `900` |
 | `--remote-off` | Stop builder after build | `false` |
 
+**Dockerfile Override Options**:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--dockerfile PATH` | Use a pre-existing Dockerfile (skips generation) | - |
+| `--build-arg KEY=VALUE` | Docker build argument (repeatable) | - |
+| `--env-name NAME` | Override the environment name used for tagging and PATH setup | From env file |
+
+**Notes on `--env-name`**: When `--dockerfile` is used without `--file`/`--tarball`/`--requirements`, absconda attempts to auto-detect the environment name from `ENV CONDA_DEFAULT_ENV=<name>` in the Dockerfile. If that line is absent, either `--repository` or `--env-name` must be specified.
+
+**Progress messages are written to stderr**, so `absconda generate --file env.yaml > Dockerfile` produces a clean Dockerfile on stdout.
+
 **Examples**:
 
 ```bash
@@ -229,17 +241,25 @@ absconda build \
 
 # Use config defaults for repository
 absconda build --file env.yaml --tag v1.0 --push
+
+# Build from a pre-existing Dockerfile (env name auto-detected)
+absconda build \
+  --dockerfile Dockerfile \
+  --repository ghcr.io/org/myenv \
+  --tag v1.0 \
+  --push
+
+# Build from a pre-existing Dockerfile with explicit env name
+absconda build \
+  --dockerfile Dockerfile \
+  --env-name myenv \
+  --push
 ```
 
-**Output**:
+**Output** (progress goes to stderr, clean output on stdout):
 
 ```
 Using policy profile default from /Users/user/.config/absconda/policy.yaml.
-[remote] Starting builder gcp-builder...
-[remote] Builder is running
-[remote] Uploading build context (2.3 MB)...
-[remote] Running docker build...
-[remote] Build completed successfully
 Image built: ghcr.io/org/myenv:v1.0
 Image pushed: ghcr.io/org/myenv:v1.0
 ```
@@ -248,44 +268,61 @@ Image pushed: ghcr.io/org/myenv:v1.0
 
 ### publish
 
-Build, push, and optionally create Singularity artifact.
+Build and push a container image to a registry. Push is always performed.
 
 ```bash
 absconda publish [OPTIONS]
 ```
 
-Same options as `build`, plus:
+Accepts the same options as `build` (see above), except `--push` is implicit and not needed.
+Key options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--singularity-out PATH` | Output .sif file path | - |
+| `--repository REPO` | Image repository | `<registry>/<org>/<env-name>` from config |
+| `--tag TAG` | Image tag | `YYYYMMDD` |
+| `--file PATH`, `-f` | Conda environment YAML | `env.yaml` |
+| `--tarball PATH`, `-t` | Pre-packed conda tarball | - |
+| `--requirements PATH`, `-r` | pip requirements.txt | - |
+| `--dockerfile PATH` | Use a pre-existing Dockerfile | - |
+| `--build-arg KEY=VALUE` | Docker build argument (repeatable) | - |
+| `--env-name NAME` | Override the environment name | From env file |
+| `--remote-builder NAME` | Remote builder name | - |
+| `--remote-off` | Stop builder after build | `false` |
 
-**Note**: `--push` is automatic with publish command.
+**To create a Singularity image after pushing**, use `singularity pull` or the `deploy` command:
+
+```bash
+singularity pull myenv.sif docker://ghcr.io/org/myenv:v1.0
+# or
+absconda deploy ghcr.io/org/myenv:v1.0 --commands python,pip
+```
 
 **Examples**:
 
 ```bash
-# Build, push, and pull Singularity image
+# Build and push
 absconda publish \
   --file env.yaml \
   --repository ghcr.io/org/myenv \
-  --tag v1.0 \
-  --singularity-out myenv.sif
+  --tag v1.0
 
-# Remote build with Singularity
+# Remote build, then push
 absconda publish \
   --file env.yaml \
-  --remote-builder gcp-builder \
-  --singularity-out myenv.sif
+  --remote-builder gcp-builder
+
+# Publish from a pre-existing Dockerfile
+absconda publish \
+  --dockerfile Dockerfile \
+  --env-name myenv
 ```
 
 **Output**:
 
 ```
+Using policy profile default from /Users/user/.config/absconda/policy.yaml.
 Image pushed: ghcr.io/org/myenv:v1.0
-INFO:    Converting OCI blobs to SIF format
-INFO:    Starting build...
-Singularity image written to myenv.sif
 ```
 
 ---
@@ -320,6 +357,8 @@ absconda wrap [OPTIONS]
 | `--extra-mounts LIST` | Comma-separated mount paths | Config defaults |
 | `--env LIST` | Comma-separated env vars to pass through | Config defaults |
 | `--gpu` | Enable GPU support | `false` |
+| `--env-dir PATH` | Conda env path inside container (for PATH setup) | Auto-derived from policy `env_prefix` |
+| `--shims LIST` | Shim groups to inject alongside wrappers (e.g., `pbs,singularity`) | - |
 
 **Examples**:
 
@@ -377,7 +416,7 @@ Next steps:
 
 ### module
 
-Generate an environment module file for wrappers.
+Generate a Tcl environment module file that adds wrapper scripts to PATH.
 
 ```bash
 absconda module [OPTIONS]
@@ -387,50 +426,34 @@ absconda module [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--name NAME` | Module name with version (e.g., `myenv/1.0`) |
-| `--wrapper-dir PATH` | Directory containing wrapper scripts |
-| `--description TEXT` | Module description |
-| `--image IMAGE` | Container image reference |
+| `--image IMAGE` | Container image reference (used to derive defaults) |
 
-**Configuration Options**:
+**Optional Options**:
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--name NAME` | Module name (e.g., `myenv/1.0`) | Derived from image `<name>/<tag>` |
+| `--wrapper-dir PATH` | Directory containing wrapper scripts | Config or `~/.local/absconda/wrappers/<name>/<tag>` |
+| `--output-dir PATH` | Module file output directory | Config or `~/.local/absconda/modulefiles` |
+| `--description TEXT` | Module description | `<name> environment` |
 | `--runtime RUNTIME` | Container runtime | `singularity` |
-| `--output-dir PATH` | Module file directory | Config or `~/.local/absconda/modulefiles` |
-| `--commands LIST` | Comma-separated command list | Auto-detect from wrapper-dir |
+| `--commands LIST` | Comma-separated command list (for help text) | - |
 
 **Examples**:
 
 ```bash
-# Basic module generation
-absconda module \
-  --name myenv/1.0 \
-  --wrapper-dir ~/.local/absconda/wrappers/myenv \
-  --description "Python data science environment" \
-  --image ghcr.io/org/myenv:v1.0
+# Minimal — all defaults derived from image reference
+absconda module --image ghcr.io/org/myenv:v1.0
 
-# With explicit commands
+# Explicit name and wrapper directory
 absconda module \
-  --name myenv/1.0 \
-  --wrapper-dir /path/to/wrappers \
-  --description "Analysis environment" \
   --image ghcr.io/org/myenv:v1.0 \
-  --commands python,pip,jupyter
-
-# Docker runtime
-absconda module \
   --name myenv/1.0 \
-  --wrapper-dir ~/.local/absconda/wrappers/myenv \
-  --description "Container environment" \
-  --image ghcr.io/org/myenv:v1.0 \
-  --runtime docker
+  --wrapper-dir ~/.local/absconda/wrappers/myenv/v1.0 \
+  --description "Python data science environment"
 
 # Custom output directory
 absconda module \
-  --name myenv/1.0 \
-  --wrapper-dir ~/.local/absconda/wrappers/myenv \
-  --description "Environment" \
   --image ghcr.io/org/myenv:v1.0 \
   --output-dir /path/to/modulefiles
 ```
@@ -438,17 +461,102 @@ absconda module \
 **Output**:
 
 ```
-✓ Generated module file: /Users/user/.local/absconda/modulefiles/myenv/1.0
+✓ Generated module file: /Users/user/.local/absconda/modulefiles/myenv/v1.0
 
-Module name: myenv/1.0
-Wrapper directory: /Users/user/.local/absconda/wrappers/myenv
+Module name: myenv/v1.0
+Wrapper directory: /Users/user/.local/absconda/wrappers/myenv/v1.0
 Runtime: singularity
 Image: ghcr.io/org/myenv:v1.0
 
 Usage:
   module use /Users/user/.local/absconda/modulefiles
-  module load myenv/1.0
-  module help myenv/1.0
+  module load myenv/v1.0
+  module help myenv/v1.0
+```
+
+---
+
+### deploy
+
+Pull a container image, generate wrapper scripts, and create an environment module in one step. Can also build and push the image first when `--file` is provided.
+
+```bash
+absconda deploy [IMAGE] [OPTIONS]
+```
+
+**Arguments**:
+
+| Argument | Description |
+|----------|-------------|
+| `IMAGE` | Container image reference (e.g., `ghcr.io/org/env:tag`). Omit when using `--file` to build first. |
+
+**Deploy Options**:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--commands LIST` | Comma-separated commands to wrap (required unless `--no-wrap`) | - |
+| `--runtime RUNTIME` | Container runtime: `singularity` or `docker` | Config or `singularity` |
+| `--image-cache PATH` | Directory to cache pulled SIF files | Config or `~/.local/absconda/sif-cache` |
+| `--output-dir PATH` | Directory for wrapper scripts | Config or `~/.local/absconda/wrappers/<name>/<tag>` |
+| `--module-dir PATH` | Directory for module files | Config or `~/.local/absconda/modulefiles` |
+| `--extra-mounts LIST` | Additional volume mounts (comma-separated) | Config defaults |
+| `--env LIST` | Additional env vars to pass through (comma-separated) | Config defaults |
+| `--gpu` | Enable GPU support | `false` |
+| `--env-dir PATH` | Conda env path inside container | Auto-derived |
+| `--shims LIST` | Shim groups to inject (e.g., `pbs,singularity`) | - |
+| `--no-wrap` | Skip wrapper generation | `false` |
+| `--no-module` | Skip module file generation | `false` |
+
+**Build Options** (when providing `--file` to build first):
+
+Same as `build`/`publish`: `--file`, `--tarball`, `--requirements`, `--repository`, `--tag`, `--snapshot`, `--template`, `--builder-base`, `--runtime-base`, `--multi-stage/--single-stage`, `--context`, `--renv-lock`, `--remote-builder`, `--remote-config`, `--remote-wait`, `--remote-off`, `--dockerfile`, `--build-arg`, `--env-name`.
+
+**Examples**:
+
+```bash
+# Deploy an existing image (pull SIF, generate wrappers and module)
+absconda deploy ghcr.io/org/myenv:v1.0 \
+  --commands python,pip,jupyter
+
+# Full pipeline: build + push + deploy
+absconda deploy \
+  --file env.yaml \
+  --repository ghcr.io/org/myenv \
+  --commands python,pip
+
+# Full pipeline with remote builder
+absconda deploy \
+  --file env.yaml \
+  --remote-builder gcp-builder \
+  --commands python,pip,R,Rscript
+
+# Deploy without generating a module file
+absconda deploy ghcr.io/org/myenv:v1.0 \
+  --commands python,pip \
+  --no-module
+
+# With GPU and custom mounts
+absconda deploy ghcr.io/org/gpu-env:v1.0 \
+  --commands python \
+  --gpu \
+  --extra-mounts /scratch/$PROJECT,/g/data/$PROJECT
+```
+
+**Output**:
+
+```
+Using policy profile default from /Users/user/.config/absconda/policy.yaml.
+Image pushed: ghcr.io/org/myenv:v1.0
+Pulling image to /home/user/.local/absconda/sif-cache/myenv-v1.0.sif...
+Singularity image pulled to /home/user/.local/absconda/sif-cache/myenv-v1.0.sif
+✓ Generated 3 wrapper(s) in /home/user/.local/absconda/wrappers/myenv/v1.0
+✓ Generated module file: /home/user/.local/absconda/modulefiles/myenv/v1.0
+
+Deployed: ghcr.io/org/myenv:v1.0
+
+Usage:
+  module use /home/user/.local/absconda/modulefiles
+  module load myenv/v1.0
 ```
 
 ---
@@ -575,6 +683,121 @@ This will run: gcloud compute ssh gcp-builder --zone=us-central1-a --tunnel-thro
 Update the 'user' field in your config if it differs from the current setting.
 
 You can now use: absconda remote status gcp-builder
+```
+
+---
+
+## Config Commands
+
+Manage Absconda configuration from the command line.
+
+### config list
+
+List all configuration settings from all config files.
+
+```bash
+absconda config list [--show-origin]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--show-origin` | Show which config file each value comes from | `false` |
+
+**Example**:
+
+```bash
+absconda config list
+# registry=ghcr.io
+# organization=myorg
+
+absconda config list --show-origin
+# /home/user/.config/absconda/config.yaml
+#   registry=ghcr.io
+#   organization=myorg
+```
+
+---
+
+### config get
+
+Get a single configuration value using dot-notation.
+
+```bash
+absconda config get KEY
+```
+
+**Examples**:
+
+```bash
+absconda config get registry
+# ghcr.io
+
+absconda config get wrappers.default_runtime
+# singularity
+```
+
+---
+
+### config set
+
+Set a configuration value (written to user config by default).
+
+```bash
+absconda config set KEY VALUE [--system]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--system` | Write to system config instead of user config | `false` |
+
+**Examples**:
+
+```bash
+absconda config set registry ghcr.io
+absconda config set organization myteam
+absconda config set wrappers.default_runtime singularity
+```
+
+---
+
+### config unset
+
+Remove a configuration value.
+
+```bash
+absconda config unset KEY [--system]
+```
+
+---
+
+### config edit
+
+Open the configuration file in `$EDITOR` or `vi`.
+
+```bash
+absconda config edit [--system]
+```
+
+---
+
+### config paths
+
+Show all configuration file paths and whether they exist.
+
+```bash
+absconda config paths
+```
+
+**Output**:
+
+```
+Configuration file search order:
+
+  ✓ /home/user/.config/absconda/config.yaml
+  ✗ /etc/xdg/absconda/config.yaml
+
+User config: /home/user/.config/absconda/config.yaml
+System config: /etc/xdg/absconda/config.yaml
 ```
 
 ---

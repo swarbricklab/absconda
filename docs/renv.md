@@ -16,8 +16,8 @@ Pass the lock file to any rendering/building command via `--renv-lock`:
 ```bash
 absconda generate --file env.yaml --renv-lock renv.lock --output Dockerfile
 absconda build --file env.yaml --renv-lock renv.lock --repository ghcr.io/acme/r-lab
-absconda publish --file env.yaml --renv-lock renv.lock --repository ghcr.io/acme/r-lab \
-  --singularity-out dist/r-lab.sif
+absconda publish --file env.yaml --renv-lock renv.lock --repository ghcr.io/acme/r-lab
+absconda deploy ghcr.io/acme/r-lab:$(date +%Y%m%d) --commands Rscript,R
 ```
 
 What happens under the hood:

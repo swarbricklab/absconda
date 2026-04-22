@@ -23,7 +23,7 @@ RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
     tar -xzf /tmp/absconda-env.tar.gz -C {{ env_dir }} && \
     rm /tmp/absconda-env.tar.gz
 
-RUN if [ -x "{{ env_dir }}/bin/conda-unpack" ]; then PATH="{{ env_dir }}/bin:${PATH}" {{ env_dir }}/bin/conda-unpack && rm -rf {{ env_dir }}/conda-meta/history; fi
+RUN if [ -x "{{ env_dir }}/bin/conda-unpack" ]; then micromamba run -n base python {{ env_dir }}/bin/conda-unpack && rm -rf {{ env_dir }}/conda-meta/history; fi
 
 {% if renv_enabled %}
 RUN <<'ABSCONDA_RENV'

@@ -50,6 +50,9 @@ def test_render_dockerfile_multi_stage() -> None:
     assert "FROM debian:bookworm-slim AS runtime" in dockerfile
     assert "ENV CONDA_PREFIX=/opt/conda/envs/tmpl-demo" in dockerfile
     assert "--channel conda-forge" in dockerfile
+    assert "COPY --from=builder /opt/conda/envs/tmpl-demo/ /opt/conda/envs/tmpl-demo/" in dockerfile
+    assert "micromamba run -n base python" in dockerfile
+    assert "conda-unpack" in dockerfile
 
 
 def test_render_dockerfile_custom_template(tmp_path: Path) -> None:
@@ -94,5 +97,6 @@ def test_render_dockerfile_with_renv_lock() -> None:
 
     assert "ABSCONDA_RENV_LOCK" in dockerfile
     assert "renv::restore" in dockerfile
+    assert "COPY --from=builder /opt/conda/envs/tmpl-demo/ /opt/conda/envs/tmpl-demo/" in dockerfile
     assert "COPY --from=builder /tmp/absconda-renv/ /opt/absconda/renv/" in dockerfile
     assert "RENV_PATHS_LIBRARY=/opt/absconda/renv/renv/library" in dockerfile

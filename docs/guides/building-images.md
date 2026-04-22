@@ -34,24 +34,7 @@ Pushes to the registry after successful build.
 
 ## The publish Command
 
-Build, push, and optionally create Singularity artifacts.
-
-### Docker + Singularity
-
-```bash
-absconda publish \
-  --file environment.yaml \
-  --repository ghcr.io/org/myimage \
-  --tag latest \
-  --singularity-out dist/myimage.sif
-```
-
-This:
-1. Builds the Docker image
-2. Pushes to ghcr.io
-3. Pulls as Singularity and saves `.sif` file
-
-### Docker Only
+Build and push a container image to a registry. Push is always performed (unlike `build`, which requires `--push`).
 
 ```bash
 absconda publish \
@@ -60,7 +43,19 @@ absconda publish \
   --tag latest
 ```
 
-Equivalent to `build --push`.
+This is equivalent to `build --push`. To also create a Singularity image and generate wrappers, use `deploy` instead (see [HPC Deployment](hpc-deployment.md)).
+
+### Using a Pre-existing Dockerfile
+
+```bash
+absconda publish \
+  --dockerfile Dockerfile \
+  --env-name myimage \
+  --repository ghcr.io/org/myimage \
+  --tag latest
+```
+
+When `--dockerfile` is used without `--file`, the environment name is auto-detected from `ENV CONDA_DEFAULT_ENV=<name>` in the Dockerfile (set automatically by `absconda generate`). Use `--env-name` to override.
 
 ## Input Options
 
@@ -326,7 +321,7 @@ Remote builds create a manifest with metadata:
 
 ```json
 {
-  "absconda_version": "0.1.0",
+  "absconda_version": "0.2.5",
   "env_name": "myenv",
   "image": "ghcr.io/org/myimage:latest",
   "generated_at": "2025-12-03T10:30:00Z",

@@ -72,14 +72,12 @@ jobs:
         run: |
           IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"
 
-          qxub exec -v --mod absconda --mem 4GB --resources jobfs=4GB --internet -- \
-            bash -c "
-              export SINGULARITY_DOCKER_USERNAME=swarbricklab
-              export SINGULARITY_DOCKER_PASSWORD=\$(cat $GHCR_CRED_FILE)
-              absconda deploy '$IMAGE_REF' \
-                --commands absconda,gcloud \
-                --env-dir /opt/conda/envs/absconda \
-                --shims singularity
-            "
+          qxub exec -v --mod absconda --mem 4GB --resources jobfs=4GB --internet \
+            --vars SINGULARITY_DOCKER_USERNAME=swarbricklab,SINGULARITY_DOCKER_PASSWORD=$(cat $GHCR_CRED_FILE) \
+            -- \
+            absconda deploy "$IMAGE_REF" \
+              --commands absconda,gcloud \
+              --env-dir /opt/conda/envs/absconda \
+              --shims singularity
 
           rm -f "$GHCR_CRED_FILE"

@@ -205,16 +205,20 @@ Local Machine                      GCP Remote Builder
 └─ Monitors build progress         └─ Pushes to registry
 ```
 
-Define in `absconda-remote.yaml`:
+Define in `~/.config/absconda/config.yaml`:
 
 ```yaml
-builders:
+remote_builders:
   gcp-builder:
     provider: gcp
     project: my-gcp-project
     zone: us-central1-a
     machine_type: n1-standard-8
+    user: myusername
+    host: absconda-builder
 ```
+
+Absconda also auto-discovers a project-level `absconda-remote.yaml` for backwards compatibility.
 
 Use with `--remote-builder`:
 
@@ -256,12 +260,18 @@ Generate Tcl module files for HPC module systems:
 
 ```bash
 absconda module \
-  --name myenv/1.0 \
-  --wrapper-dir ./wrappers \
-  --output-dir ./modulefiles \
-  --description "My research environment" \
   --image ghcr.io/org/myenv:latest \
-  --runtime singularity
+  --wrapper-dir ./wrappers \
+  --output-dir ./modulefiles
+```
+
+Or use `deploy` to pull SIF, generate wrappers, and create a module in one step:
+
+```bash
+absconda deploy ghcr.io/org/myenv:latest \
+  --commands python,pip \
+  --output-dir ./wrappers \
+  --module-dir ./modulefiles
 ```
 
 Users can then:

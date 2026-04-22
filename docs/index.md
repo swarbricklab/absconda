@@ -38,7 +38,7 @@ Step-by-step tutorials for common workflows.
 - [Basic Usage](guides/basic-usage.md) - Environment files to Dockerfiles
 - [Building Images](guides/building-images.md) - Using `build` and `publish` commands
 - [Remote Builders](guides/remote-builders.md) - Setting up GCP remote builders
-- [HPC Deployment](guides/hpc-deployment.md) - Wrappers and modules for Singularity
+- [HPC Deployment](guides/hpc-deployment.md) - Singularity wrappers and modules via `deploy`
 - [R + renv Integration](guides/renv-integration.md) - Combining R with Conda
 - [Requirements Mode](guides/requirements-mode.md) - Using pip requirements.txt
 - [Advanced Templating](guides/advanced-templating.md) - Custom Dockerfile templates
@@ -46,7 +46,7 @@ Step-by-step tutorials for common workflows.
 ### [Reference](reference/)
 Detailed documentation for looking up specifics.
 
-- [CLI Reference](reference/cli.md) - All commands and options
+- [CLI Reference](reference/cli.md) - All commands and options (`generate`, `build`, `publish`, `deploy`, `wrap`, `module`, `remote`, `config`)
 - [Environment Files](reference/environment-files.md) - YAML format specification
 - [Configuration](reference/configuration.md) - Config files and XDG paths
 - [Policies](reference/policies.md) - Policy profiles and constraints

@@ -11,13 +11,31 @@ HPC systems like NCI Gadi use **Singularity/Apptainer** for containers and **Env
 
 ## Workflow
 
+The `deploy` command handles the full pipeline in one step:
+
 ```
-Build Image → Create Singularity Image → Generate Wrappers → Create Module → Deploy
+absconda deploy --file env.yaml --commands python,pip
+  → Build image
+  → Push to registry
+  → Pull as Singularity SIF
+  → Generate wrapper scripts
+  → Create module file
 ```
+
+Or, if you already have a published image:
+
+```
+absconda deploy ghcr.io/myorg/myenv:1.0.0 --commands python,pip
+  → Pull as Singularity SIF
+  → Generate wrapper scripts
+  → Create module file
+```
+
+You can also run the steps separately — see below.
 
 ## Step 1: Build Your Image
 
-First, build and push your container image:
+Build and push your container image:
 
 ```bash
 absconda build \
@@ -27,14 +45,14 @@ absconda build \
   --push
 ```
 
-Or build with Singularity output directly:
+Or run the full pipeline in one step with `deploy`:
 
 ```bash
-absconda publish \
+absconda deploy \
   --file environment.yaml \
   --repository ghcr.io/myorg/myenv \
   --tag 1.0.0 \
-  --singularity-out myenv-1.0.0.sif
+  --commands python,pip,jupyter
 ```
 
 ## Step 2: Generate Wrapper Scripts
@@ -127,17 +145,26 @@ Users run commands normally:
 
 Module files integrate with HPC environment modules.
 
-### Basic Module Generation
+### Using deploy (recommended)
+
+The `deploy` command combines wrapper generation and module creation:
+
+```bash
+absconda deploy ghcr.io/myorg/myenv:1.0.0 \
+  --commands python,pip,jupyter \
+  --output-dir ./wrappers \
+  --module-dir ./modulefiles
+```
+
+### Using module directly
 
 ```bash
 absconda module \
+  --image ghcr.io/myorg/myenv:1.0.0 \
   --name myenv/1.0.0 \
   --wrapper-dir ./wrappers \
   --output-dir ./modulefiles \
-  --description "My research environment" \
-  --image ghcr.io/myorg/myenv:1.0.0 \
-  --runtime singularity \
-  --commands python,pip,jupyter
+  --description "My research environment"
 ```
 
 Creates `modulefiles/myenv/1.0.0`.
@@ -211,43 +238,41 @@ module help myenv/1.0.0
 
 ## Complete NCI Gadi Example
 
-### 1. Build on Local Machine with Remote Builder
+### 1. Build and Deploy in One Step
 
 ```bash
-# Build using GCP remote builder
+# Build using GCP remote builder, then deploy to HPC
+absconda deploy \
+  --file environment.yaml \
+  --repository ghcr.io/mylab/analysis \
+  --tag 2025.12.03 \
+  --remote-builder gcp-builder \
+  --commands python,pip,jupyter,R,Rscript \
+  --extra-mounts '/g/data/xy99,/scratch/xy99' \
+  --output-dir ./wrappers \
+  --module-dir ./modulefiles
+```
+
+Or separate the build and deploy steps:
+
+```bash
+# Step 1: Build remotely and push
 absconda build \
   --file environment.yaml \
   --repository ghcr.io/mylab/analysis \
   --tag 2025.12.03 \
   --remote-builder gcp-builder \
   --push
-```
 
-### 2. Generate Wrappers Locally
-
-```bash
-absconda wrap \
-  --image ghcr.io/mylab/analysis:2025.12.03 \
+# Step 2: Deploy (pull SIF, wrappers, module)
+absconda deploy ghcr.io/mylab/analysis:2025.12.03 \
   --commands python,pip,jupyter,R,Rscript \
-  --runtime singularity \
+  --extra-mounts '/g/data/xy99,/scratch/xy99' \
   --output-dir ./wrappers \
-  --extra-mounts '/g/data/xy99,/scratch/xy99'
+  --module-dir ./modulefiles
 ```
 
-### 3. Generate Module Locally
-
-```bash
-absconda module \
-  --name analysis/2025.12.03 \
-  --wrapper-dir ./wrappers \
-  --output-dir ./modulefiles \
-  --description "Analysis environment for XY99 project" \
-  --image ghcr.io/mylab/analysis:2025.12.03 \
-  --runtime singularity \
-  --commands python,pip,jupyter,R,Rscript
-```
-
-### 4. Deploy to Gadi
+### 2. Deploy to Gadi
 
 ```bash
 # Copy to shared project space
@@ -264,7 +289,7 @@ module load analysis/2025.12.03
 python analysis.py
 ```
 
-### 5. Team Members Use It
+### 3. Team Members Use It
 
 ```bash
 # In job script or interactive session
@@ -328,29 +353,17 @@ Creates Docker-based wrappers using `docker run`.
 Use Absconda to deploy itself to HPC:
 
 ```bash
-# Generate wrappers for absconda command
-absconda wrap \
-  --image ghcr.io/swarbricklab/absconda:0.1.0 \
+absconda deploy ghcr.io/swarbricklab/absconda:0.2.5 \
   --commands absconda \
-  --runtime singularity \
+  --extra-mounts '/g/data/$PROJECT,/scratch/$PROJECT' \
   --output-dir ./wrappers \
-  --extra-mounts '/g/data/$PROJECT,/scratch/$PROJECT'
-
-# Generate module
-absconda module \
-  --name absconda/0.1.0 \
-  --wrapper-dir ./wrappers \
-  --output-dir ./modulefiles \
-  --description "Absconda: Conda environment containerization" \
-  --image ghcr.io/swarbricklab/absconda:0.1.0 \
-  --runtime singularity \
-  --commands absconda
+  --module-dir ./modulefiles
 ```
 
 Then team members can:
 
 ```bash
-module load absconda/0.1.0
+module load absconda/0.2.5
 absconda build --file myenv.yaml --repository ghcr.io/mylab/myenv
 ```
 

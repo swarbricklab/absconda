@@ -40,6 +40,7 @@ from .templates import (
 )
 
 console = Console()
+err_console = Console(stderr=True)
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=True,
@@ -97,7 +98,7 @@ def main(
     try:
         policy_resolution = load_policy(policy, profile)
     except PolicyLoadError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     state["policy"] = policy_resolution
@@ -122,13 +123,13 @@ def _load_with_feedback(
     )
 
     if inputs_provided > 1:
-        console.print(
+        err_console.print(
             "[bold yellow]warning[/bold yellow]: Multiple input types provided. "
             "Only one of --file, --tarball, or --requirements should be specified."
         )
 
     if inputs_provided == 0:
-        console.print(
+        err_console.print(
             "[red]Error:[/red] One of --file, --tarball, or --requirements must be provided."
         )
         raise typer.Exit(code=1)
@@ -142,7 +143,7 @@ def _load_with_feedback(
             # file is guaranteed to not be None here
             return load_environment(file, snapshot)  # type: ignore[arg-type]
     except EnvironmentLoadError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
 
@@ -153,12 +154,12 @@ def _read_optional_text_file(path: Optional[Path], label: str) -> Optional[str]:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as exc:
-        console.print(f"[red]Error:[/red] Unable to read {label} '{path}': {exc}")
+        err_console.print(f"[red]Error:[/red] Unable to read {label} '{path}': {exc}")
         raise typer.Exit(code=1) from exc
 
     stripped = content.strip()
     if not stripped:
-        console.print(f"[bold yellow]warning[/bold yellow]: {label} '{path}' was empty.")
+        err_console.print(f"[bold yellow]warning[/bold yellow]: {label} '{path}' was empty.")
     return stripped
 
 
@@ -168,7 +169,7 @@ def _print_warnings(report: LoadReport) -> None:
 
 def _print_warning_messages(messages: Iterable[str]) -> None:
     for warning in messages:
-        console.print(f"[bold yellow]warning[/bold yellow]: {warning}")
+        err_console.print(f"[bold yellow]warning[/bold yellow]: {warning}")
 
 
 def _enforce_policy_constraints(report: LoadReport) -> None:
@@ -184,7 +185,7 @@ def _enforce_policy_constraints(report: LoadReport) -> None:
         if disallowed:
             allowed_list = ", ".join(allowed)
             bad_list = ", ".join(disallowed)
-            console.print(
+            err_console.print(
                 "[red]Policy violation:[/red] channels "
                 f"[{bad_list}] are not permitted by profile '{profile.name}'.\n"
                 f"Allowed channels: {allowed_list}"
@@ -205,6 +206,15 @@ def _slugify(value: str) -> str:
     return slug or "env"
 
 
+def _detect_env_name_from_dockerfile(dockerfile_text: str) -> Optional[str]:
+    """Extract the conda env name from an absconda-generated Dockerfile.
+
+    Absconda always emits 'ENV CONDA_DEFAULT_ENV=<name>', so we look for that line.
+    """
+    match = re.search(r"^ENV\s+CONDA_DEFAULT_ENV=(\S+)", dockerfile_text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
 def _date_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 
@@ -220,7 +230,7 @@ def _resolve_repository(repository: Optional[str], env_name: str) -> str:
     absconda_config = cfg.load_config()
 
     if absconda_config.organization is None:
-        console.print(
+        err_console.print(
             "[red]Error:[/red] No repository specified and no default organization configured.\n"
             "Either:\n"
             "  1. Use --repository flag\n"
@@ -270,14 +280,14 @@ def _resolve_remote_options(
             remote_builder = config.default_remote_builder
     if remote_builder is None:
         if remote_off:
-            console.print(
+            err_console.print(
                 "[bold yellow]warning[/bold yellow]: --remote-off ignored because "
                 "no remote builder was specified."
             )
         return None
 
     if remote_wait <= 0:
-        console.print("[red]Error:[/red] --remote-wait must be a positive integer.")
+        err_console.print("[red]Error:[/red] --remote-wait must be a positive integer.")
         raise typer.Exit(code=1)
 
     return RemoteBuildOptions(
@@ -292,10 +302,10 @@ def _run_command(command: list[str], *, cwd: Optional[Path] = None) -> None:
     try:
         subprocess.run(command, check=True, cwd=str(cwd) if cwd else None)
     except FileNotFoundError as exc:  # pragma: no cover - depends on host setup
-        console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
+        err_console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
         raise typer.Exit(code=1) from exc
     except subprocess.CalledProcessError as exc:
-        console.print(f"[red]Command failed:[/red] {' '.join(command)}")
+        err_console.print(f"[red]Command failed:[/red] {' '.join(command)}")
         raise typer.Exit(code=exc.returncode) from exc
 
 
@@ -326,10 +336,10 @@ def _run_command_filtered(
         if returncode:
             raise subprocess.CalledProcessError(returncode, command)
     except FileNotFoundError as exc:  # pragma: no cover
-        console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
+        err_console.print(f"[red]Error:[/red] Command '{command[0]}' not found: {exc}")
         raise typer.Exit(code=1) from exc
     except subprocess.CalledProcessError as exc:
-        console.print(f"[red]Command failed:[/red] {' '.join(command)}")
+        err_console.print(f"[red]Command failed:[/red] {' '.join(command)}")
         raise typer.Exit(code=exc.returncode) from exc
 
 
@@ -354,6 +364,7 @@ def _build_image_local(
     elif report is not None:
         dockerfile = _render_dockerfile(
             report,
+            env_name_override=env_name,
             template=template,
             builder_override=builder_override,
             runtime_override=runtime_override,
@@ -432,6 +443,7 @@ def _build_image_remote(
     elif report is not None:
         dockerfile = _render_dockerfile(
             report,
+            env_name_override=env_name,
             template=template,
             builder_override=builder_override,
             runtime_override=runtime_override,
@@ -470,14 +482,14 @@ def _build_image_remote(
             wait_seconds=remote_options.wait_seconds,
             shutdown_after=remote_options.shutdown_after,
             manifest=manifest,
-            console=console,
+            console=err_console,
             build_args=build_args,
         )
     except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
+        err_console.print(f"[red]Remote config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     except remote.RemoteError as exc:
-        console.print(f"[red]Remote build failed:[/red] {exc}")
+        err_console.print(f"[red]Remote build failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     return image_ref
@@ -496,7 +508,7 @@ def _print_policy_banner() -> None:
     policy_resolution = _active_policy()
     source_path = policy_resolution.source_path
     source = str(source_path) if source_path else "built-in defaults"
-    console.print(
+    err_console.print(
         f"Using policy profile [cyan]{policy_resolution.profile.name}[/cyan] from {source}."
     )
 
@@ -504,6 +516,7 @@ def _print_policy_banner() -> None:
 def _render_dockerfile(
     report: LoadReport,
     *,
+    env_name_override: Optional[str] = None,
     template: Optional[Path],
     builder_override: Optional[str],
     runtime_override: Optional[str],
@@ -530,7 +543,7 @@ def _render_dockerfile(
         env=report.env,
         tarball_filename="conda-env.tar.gz" if report.tarball else None,
         requirements_filename="requirements.txt" if report.requirements else None,
-        env_name=report.env_name,
+        env_name=env_name_override if env_name_override is not None else report.env_name,
         profile=profile,
         multi_stage=multi_stage,
         builder_base=builder_base,
@@ -542,7 +555,7 @@ def _render_dockerfile(
     try:
         return render_dockerfile(config)
     except TemplateRenderError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
 
@@ -629,7 +642,7 @@ def generate(
 
     if output is not None:
         output.write_text(dockerfile, encoding="utf-8")
-        console.print(f"[green]Dockerfile written to[/green] {output}.")
+        err_console.print(f"[green]Dockerfile written to[/green] {output}.")
     else:
         console.print(dockerfile, highlight=False, markup=False, soft_wrap=False)
 
@@ -675,9 +688,9 @@ def validate(
     _enforce_policy_constraints(report)
 
     if report.tarball:
-        console.print(f"Tarball [green]{report.env_name}[/green] is valid.")
+        err_console.print(f"Tarball [green]{report.env_name}[/green] is valid.")
     else:
-        console.print(
+        err_console.print(
             f"Environment [green]{report.env_name}[/green] is valid with "
             f"{len(report.env.dependencies) if report.env else 0} dependency entries."  # type: ignore[union-attr]
         )
@@ -783,6 +796,14 @@ def build(
         "--build-arg",
         help="Docker build argument (KEY=VALUE). Can be repeated.",
     ),
+    env_name: Optional[str] = typer.Option(
+        None,
+        "--env-name",
+        help=(
+            "Override the environment name. When using --dockerfile without an environment file, "
+            "this (or --repository) is required to determine the target repository."
+        ),
+    ),
 ) -> None:
     """Render a Dockerfile and build the container image."""
 
@@ -792,27 +813,31 @@ def build(
     if dockerfile is not None:
         dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
         if dockerfile_text is None:
-            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+            err_console.print(
+                f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable."
+            )
             raise typer.Exit(code=1)
 
-        # When using --dockerfile without an env file, repository is required
+        # When using --dockerfile without an env file, try to determine env name
         if file is None and tarball is None and requirements is None:
-            if repository is None:
-                console.print(
-                    "[red]Error:[/red] --repository is required when using --dockerfile "
-                    "without an environment file."
+            detected_env_name = env_name or _detect_env_name_from_dockerfile(dockerfile_text)
+            if repository is None and detected_env_name is None:
+                err_console.print(
+                    "[red]Error:[/red] --repository or --env-name is required when using "
+                    "--dockerfile without an environment file "
+                    "(could not auto-detect env name from Dockerfile)."
                 )
                 raise typer.Exit(code=1)
             report = None
-            resolved_repository = repository
-            env_name = _slugify(Path(repository).name)  # derive from repo name
+            resolved_env_name = detected_env_name or _slugify(Path(repository).name)  # type: ignore[arg-type]
+            resolved_repository = _resolve_repository(repository, resolved_env_name)
         else:
             # Load environment for metadata/env_name but use provided dockerfile
             report = _load_with_feedback(file, tarball, requirements, snapshot)
             _print_warnings(report)
             _enforce_policy_constraints(report)
-            resolved_repository = _resolve_repository(repository, report.env_name)
-            env_name = report.env_name
+            resolved_env_name = env_name if env_name is not None else report.env_name
+            resolved_repository = _resolve_repository(repository, resolved_env_name)
 
         remote_opts = _resolve_remote_options(
             remote_builder, remote_config, remote_wait, remote_off
@@ -823,7 +848,7 @@ def build(
                 report,
                 repository=resolved_repository,
                 tag=tag,
-                env_name=env_name,
+                env_name=resolved_env_name,
                 template=template,
                 builder_override=builder_base,
                 runtime_override=runtime_base,
@@ -840,7 +865,7 @@ def build(
                 report,
                 repository=resolved_repository,
                 tag=tag,
-                env_name=env_name,
+                env_name=resolved_env_name,
                 template=template,
                 builder_override=builder_base,
                 runtime_override=runtime_base,
@@ -852,9 +877,9 @@ def build(
                 build_args=build_arg,
             )
 
-        console.print(f"[green]Image built:[/green] {image_ref}")
+        err_console.print(f"[green]Image built:[/green] {image_ref}")
         if push:
-            console.print(f"[green]Image pushed:[/green] {image_ref}")
+            err_console.print(f"[green]Image pushed:[/green] {image_ref}")
         return
 
     # Standard mode: generate Dockerfile from environment file
@@ -867,8 +892,8 @@ def build(
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
-    # Resolve repository with defaults from config
-    resolved_repository = _resolve_repository(repository, report.env_name)
+    resolved_env_name = env_name if env_name is not None else report.env_name
+    resolved_repository = _resolve_repository(repository, resolved_env_name)
 
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
@@ -877,7 +902,7 @@ def build(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=resolved_env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -893,7 +918,7 @@ def build(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=resolved_env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -904,9 +929,9 @@ def build(
             build_args=build_arg,
         )
 
-    console.print(f"[green]Image built:[/green] {image_ref}")
+    err_console.print(f"[green]Image built:[/green] {image_ref}")
     if push:
-        console.print(f"[green]Image pushed:[/green] {image_ref}")
+        err_console.print(f"[green]Image pushed:[/green] {image_ref}")
 
 
 @app.command()
@@ -1007,6 +1032,14 @@ def publish(
         "--build-arg",
         help="Docker build argument (KEY=VALUE). Can be repeated.",
     ),
+    env_name: Optional[str] = typer.Option(
+        None,
+        "--env-name",
+        help=(
+            "Override the environment name. When using --dockerfile without an environment file, "
+            "this (or --repository) is required to determine the target repository."
+        ),
+    ),
 ) -> None:
     """Build a container image and push it to a registry."""
 
@@ -1016,27 +1049,31 @@ def publish(
     if dockerfile is not None:
         dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
         if dockerfile_text is None:
-            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+            err_console.print(
+                f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable."
+            )
             raise typer.Exit(code=1)
 
-        # When using --dockerfile without an env file, repository is required
+        # When using --dockerfile without an env file, try to determine env name
         if file is None and tarball is None and requirements is None:
-            if repository is None:
-                console.print(
-                    "[red]Error:[/red] --repository is required when using --dockerfile "
-                    "without an environment file."
+            detected_env_name = env_name or _detect_env_name_from_dockerfile(dockerfile_text)
+            if repository is None and detected_env_name is None:
+                err_console.print(
+                    "[red]Error:[/red] --repository or --env-name is required when using "
+                    "--dockerfile without an environment file "
+                    "(could not auto-detect env name from Dockerfile)."
                 )
                 raise typer.Exit(code=1)
             report = None
-            resolved_repository = repository
-            env_name = _slugify(Path(repository).name)  # derive from repo name
+            resolved_env_name = detected_env_name or _slugify(Path(repository).name)  # type: ignore[arg-type]
+            resolved_repository = _resolve_repository(repository, resolved_env_name)
         else:
             # Load environment for metadata/env_name but use provided dockerfile
             report = _load_with_feedback(file, tarball, requirements, snapshot)
             _print_warnings(report)
             _enforce_policy_constraints(report)
-            resolved_repository = _resolve_repository(repository, report.env_name)
-            env_name = report.env_name
+            resolved_env_name = env_name if env_name is not None else report.env_name
+            resolved_repository = _resolve_repository(repository, resolved_env_name)
 
         remote_opts = _resolve_remote_options(
             remote_builder, remote_config, remote_wait, remote_off
@@ -1047,7 +1084,7 @@ def publish(
                 report,
                 repository=resolved_repository,
                 tag=tag,
-                env_name=env_name,
+                env_name=resolved_env_name,
                 template=template,
                 builder_override=builder_base,
                 runtime_override=runtime_base,
@@ -1064,7 +1101,7 @@ def publish(
                 report,
                 repository=resolved_repository,
                 tag=tag,
-                env_name=env_name,
+                env_name=resolved_env_name,
                 template=template,
                 builder_override=builder_base,
                 runtime_override=runtime_base,
@@ -1076,7 +1113,7 @@ def publish(
                 build_args=build_arg,
             )
 
-        console.print(f"[green]Image pushed:[/green] {image_ref}")
+        err_console.print(f"[green]Image pushed:[/green] {image_ref}")
         return
 
     # Standard mode: generate Dockerfile from environment file
@@ -1089,8 +1126,8 @@ def publish(
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
-    # Resolve repository with defaults from config
-    resolved_repository = _resolve_repository(repository, report.env_name)
+    resolved_env_name = env_name if env_name is not None else report.env_name
+    resolved_repository = _resolve_repository(repository, resolved_env_name)
 
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
@@ -1099,7 +1136,7 @@ def publish(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=resolved_env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -1115,7 +1152,7 @@ def publish(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=resolved_env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -1126,7 +1163,7 @@ def publish(
             build_args=build_arg,
         )
 
-    console.print(f"[green]Image pushed:[/green] {image_ref}")
+    err_console.print(f"[green]Image pushed:[/green] {image_ref}")
 
 
 def _publish_and_get_ref(
@@ -1137,6 +1174,7 @@ def _publish_and_get_ref(
     snapshot: Optional[Path],
     repository: Optional[str],
     tag: Optional[str],
+    env_name: Optional[str] = None,
     template: Optional[Path],
     builder_base: Optional[str],
     runtime_base: Optional[str],
@@ -1158,25 +1196,29 @@ def _publish_and_get_ref(
     if dockerfile is not None:
         dockerfile_text = _read_optional_text_file(dockerfile, "Dockerfile")
         if dockerfile_text is None:
-            console.print(f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable.")
+            err_console.print(
+                f"[red]Error:[/red] Dockerfile '{dockerfile}' is empty or unreadable."
+            )
             raise typer.Exit(code=1)
 
         if file is None and tarball is None and requirements is None:
-            if repository is None:
-                console.print(
-                    "[red]Error:[/red] --repository is required when using --dockerfile "
-                    "without an environment file."
+            detected_env_name = env_name or _detect_env_name_from_dockerfile(dockerfile_text)
+            if repository is None and detected_env_name is None:
+                err_console.print(
+                    "[red]Error:[/red] --repository or --env-name is required when using "
+                    "--dockerfile without an environment file "
+                    "(could not auto-detect env name from Dockerfile)."
                 )
                 raise typer.Exit(code=1)
             report = None
-            resolved_repository = repository
-            env_name = _slugify(Path(repository).name)
+            resolved_env_name = detected_env_name or _slugify(Path(repository).name)  # type: ignore[arg-type]
+            resolved_repository = _resolve_repository(repository, resolved_env_name)
         else:
             report = _load_with_feedback(file, tarball, requirements, snapshot)
             _print_warnings(report)
             _enforce_policy_constraints(report)
-            resolved_repository = _resolve_repository(repository, report.env_name)
-            env_name = report.env_name
+            resolved_env_name = env_name if env_name is not None else report.env_name
+            resolved_repository = _resolve_repository(repository, resolved_env_name)
 
         remote_opts = _resolve_remote_options(
             remote_builder, remote_config, remote_wait, remote_off
@@ -1187,7 +1229,7 @@ def _publish_and_get_ref(
                 report,
                 repository=resolved_repository,
                 tag=tag,
-                env_name=env_name,
+                env_name=resolved_env_name,
                 template=template,
                 builder_override=builder_base,
                 runtime_override=runtime_base,
@@ -1204,7 +1246,7 @@ def _publish_and_get_ref(
                 report,
                 repository=resolved_repository,
                 tag=tag,
-                env_name=env_name,
+                env_name=resolved_env_name,
                 template=template,
                 builder_override=builder_base,
                 runtime_override=runtime_base,
@@ -1224,7 +1266,8 @@ def _publish_and_get_ref(
     _print_warnings(report)
     _enforce_policy_constraints(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
-    resolved_repository = _resolve_repository(repository, report.env_name)
+    resolved_env_name = env_name if env_name is not None else report.env_name
+    resolved_repository = _resolve_repository(repository, resolved_env_name)
 
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
 
@@ -1233,7 +1276,7 @@ def _publish_and_get_ref(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=resolved_env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -1249,7 +1292,7 @@ def _publish_and_get_ref(
             report,
             repository=resolved_repository,
             tag=tag,
-            env_name=report.env_name,
+            env_name=resolved_env_name,
             template=template,
             builder_override=builder_base,
             runtime_override=runtime_base,
@@ -1308,19 +1351,19 @@ def _deploy_image(
         sif_filename = f"{_sanitize_image_name(image_ref)}.sif"
         image_cache.mkdir(parents=True, exist_ok=True)
         sif_path = image_cache / sif_filename
-        console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
+        err_console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
         _run_command_filtered(
             ["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"],
             noise_re=_SINGULARITY_NOISE_RE,
         )
-        console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
+        err_console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
 
     # Parse command list (needed by both wrappers and module)
     command_list: list[str] = []
     if commands is not None:
         command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
     elif not no_wrap:
-        console.print(
+        err_console.print(
             "[red]Error:[/red] --commands is required for deploy.\n"
             "Specify commands to wrap, e.g., --commands python,pip,jupyter"
         )
@@ -1369,11 +1412,11 @@ def _deploy_image(
 
         try:
             wrapper_paths = generate_wrappers(wrapper_config)
-            console.print(
+            err_console.print(
                 f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper(s) in {output_dir}"
             )
         except WrapperError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
+            err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
 
     # --- Step 3: Generate module file ---
@@ -1409,17 +1452,17 @@ def _deploy_image(
 
         try:
             module_file = generate_module(module_config)
-            console.print(f"[green]✓[/green] Generated module file: {module_file}")
+            err_console.print(f"[green]✓[/green] Generated module file: {module_file}")
         except ModuleError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
+            err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
 
     # --- Summary ---
-    console.print(f"\n[bold green]Deployed:[/bold green] {image_ref}")
+    err_console.print(f"\n[bold green]Deployed:[/bold green] {image_ref}")
     if not no_module and module_output_dir:
-        console.print("\n[bold cyan]Usage:[/bold cyan]")
-        console.print(f"  module use {module_output_dir}")
-        console.print(f"  module load {name_tag}")
+        err_console.print("\n[bold cyan]Usage:[/bold cyan]")
+        err_console.print(f"  module use {module_output_dir}")
+        err_console.print(f"  module load {name_tag}")
 
 
 @app.command()
@@ -1586,6 +1629,14 @@ def deploy(
         "--build-arg",
         help="Docker build argument (KEY=VALUE). Can be repeated.",
     ),
+    env_name: Optional[str] = typer.Option(
+        None,
+        "--env-name",
+        help=(
+            "Override the environment name. When using --dockerfile without an environment file, "
+            "this (or --repository) is required to determine the target repository."
+        ),
+    ),
 ) -> None:
     """Pull a container image, generate wrappers, and create a module file.
 
@@ -1604,7 +1655,7 @@ def deploy(
     has_build_input = file is not None or tarball is not None or requirements is not None
 
     if image is None and not has_build_input:
-        console.print(
+        err_console.print(
             "[red]Error:[/red] Provide an image reference as an argument, "
             "or use --file/--tarball/--requirements to build first."
         )
@@ -1619,6 +1670,7 @@ def deploy(
             snapshot=snapshot,
             repository=repository,
             tag=tag,
+            env_name=env_name,
             template=template,
             builder_base=builder_base,
             runtime_base=runtime_base,
@@ -1632,7 +1684,7 @@ def deploy(
             dockerfile=dockerfile,
             build_arg=build_arg,
         )
-        console.print(f"[green]Image pushed:[/green] {image_ref}")
+        err_console.print(f"[green]Image pushed:[/green] {image_ref}")
     else:
         image_ref = image
 
@@ -1660,12 +1712,12 @@ def _load_remote_definition_or_exit(
     try:
         return remote.load_remote_definition(builder, config_path=config)
     except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
+        err_console.print(f"[red]Remote config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
 
 def _handle_remote_error(prefix: str, exc: remote.RemoteError) -> None:
-    console.print(f"[red]{prefix}[/red] {exc}")
+    err_console.print(f"[red]{prefix}[/red] {exc}")
     raise typer.Exit(code=1) from exc
 
 
@@ -1691,9 +1743,9 @@ def remote_provision(
 ) -> None:
     definition = _load_remote_definition_or_exit(builder, config)
     try:
-        remote.provision_remote_builder(definition, console)
+        remote.provision_remote_builder(definition, err_console)
     except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
+        err_console.print(f"[red]Remote config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     except remote.RemoteError as exc:
         _handle_remote_error("Provisioning failed:", exc)
@@ -1706,9 +1758,9 @@ def remote_start(
 ) -> None:
     definition = _load_remote_definition_or_exit(builder, config)
     try:
-        remote.start_remote_builder(definition, console)
+        remote.start_remote_builder(definition, err_console)
     except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
+        err_console.print(f"[red]Remote config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     except remote.RemoteError as exc:
         _handle_remote_error("Start failed:", exc)
@@ -1721,9 +1773,9 @@ def remote_stop(
 ) -> None:
     definition = _load_remote_definition_or_exit(builder, config)
     try:
-        remote.stop_remote_builder(definition, console)
+        remote.stop_remote_builder(definition, err_console)
     except remote.RemoteConfigError as exc:
-        console.print(f"[red]Remote config error:[/red] {exc}")
+        err_console.print(f"[red]Remote config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     except remote.RemoteError as exc:
         _handle_remote_error("Stop failed:", exc)
@@ -1739,11 +1791,11 @@ def remote_status(
 
     reachability = "reachable" if status.reachable else "unreachable"
     color = "green" if status.reachable else "red"
-    console.print(
+    err_console.print(
         f"Builder [cyan]{status.name}[/cyan] is [{color}]{reachability}[/{color}] via SSH."
     )
     if status.ssh_error:
-        console.print(f"  ssh: {status.ssh_error}")
+        err_console.print(f"  ssh: {status.ssh_error}")
         # Provide helpful hint for GCP OS Login authentication issues
         if "Permission denied (publickey)" in status.ssh_error and "gcp" in status.name.lower():
             host = (
@@ -1751,29 +1803,31 @@ def remote_status(
                 if "@" in definition.ssh_target
                 else definition.ssh_target
             )
-            console.print(
+            err_console.print(
                 "\n[yellow]💡 Tip:[/yellow] For GCP VMs with OS Login, "
                 "you may need to authenticate first:"
             )
-            console.print(
+            err_console.print(
                 f"   gcloud compute ssh {host} --zone=$GCP_ZONE "
                 f"--tunnel-through-iap --project=$GCP_PROJECT"
             )
 
     if status.busy:
         owner = status.lock_owner or "unknown"
-        console.print(f"[yellow]Busy[/yellow]: lock file at {status.lock_path} held by {owner}.")
+        err_console.print(
+            f"[yellow]Busy[/yellow]: lock file at {status.lock_path} held by {owner}."
+        )
     else:
-        console.print("Lock: free")
+        err_console.print("Lock: free")
 
     if status.health_ok is True:
-        console.print("Health check: [green]passing[/green]")
+        err_console.print("Health check: [green]passing[/green]")
     elif status.health_ok is False:
-        console.print("Health check: [red]failing[/red]")
+        err_console.print("Health check: [red]failing[/red]")
         if status.health_error:
-            console.print(f"  details: {status.health_error}")
+            err_console.print(f"  details: {status.health_error}")
     else:
-        console.print("Health check: not configured")
+        err_console.print("Health check: not configured")
 
 
 @remote_app.command("init")
@@ -1787,7 +1841,7 @@ def remote_init(
     # Check if this looks like a GCP builder
     metadata = definition.metadata
     if "gcp" not in builder.lower() and "project" not in metadata:
-        console.print(
+        err_console.print(
             f"[yellow]Warning:[/yellow] This command is designed for GCP builders with OS Login.\n"
             f"Builder '{builder}' may not need initialization."
         )
@@ -1803,8 +1857,8 @@ def remote_init(
     zone = metadata.get("zone", "${GCP_ZONE}")
     project = metadata.get("project", "${GCP_PROJECT}")
 
-    console.print(f"Initializing SSH access to [cyan]{builder}[/cyan]...")
-    console.print(
+    err_console.print(f"Initializing SSH access to [cyan]{builder}[/cyan]...")
+    err_console.print(
         f"This will run: gcloud compute ssh {host} --zone={zone} "
         f"--tunnel-through-iap --project={project}\n"
     )
@@ -1822,7 +1876,7 @@ def remote_init(
 
     try:
         subprocess.run(cmd, check=True)
-        console.print("\n[green]✓[/green] SSH access initialized successfully!")
+        err_console.print("\n[green]✓[/green] SSH access initialized successfully!")
 
         # Try to get OS Login username
         try:
@@ -1840,22 +1894,24 @@ def remote_init(
             )
             os_login_user = result.stdout.strip()
             if os_login_user:
-                console.print(
+                err_console.print(
                     f"\n[yellow]💡 Note:[/yellow] Your OS Login username is: "
                     f"[cyan]{os_login_user}[/cyan]"
                 )
-                console.print(
+                err_console.print(
                     "Update the 'user' field in your config if it differs from the current setting."
                 )
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass  # Ignore if we can't determine OS Login username
 
-        console.print(f"\nYou can now use: absconda remote status {builder}")
+        err_console.print(f"\nYou can now use: absconda remote status {builder}")
     except subprocess.CalledProcessError as exc:
-        console.print(f"\n[red]✗[/red] Initialization failed with exit code {exc.returncode}")
+        err_console.print(f"\n[red]✗[/red] Initialization failed with exit code {exc.returncode}")
         raise typer.Exit(1) from exc
     except FileNotFoundError as exc:
-        console.print("[red]✗[/red] gcloud command not found. Please install the Google Cloud SDK.")
+        err_console.print(
+            "[red]✗[/red] gcloud command not found. Please install the Google Cloud SDK."
+        )
         raise typer.Exit(1) from exc
 
 
@@ -1942,7 +1998,7 @@ def wrap(
     # Parse command list
     command_list = [cmd.strip() for cmd in commands.split(",") if cmd.strip()]
     if not command_list:
-        console.print("[red]Error:[/red] No commands specified")
+        err_console.print("[red]Error:[/red] No commands specified")
         raise typer.Exit(1)
 
     # Auto-derive env_dir from policy env_prefix and image name
@@ -2008,26 +2064,26 @@ def wrap(
     try:
         wrapper_paths = generate_wrappers(wrapper_config)
 
-        console.print(
+        err_console.print(
             f"[green]✓[/green] Generated {len(wrapper_paths)} wrapper script(s) in {output_dir}"
         )
-        console.print(f"\n[bold]Runtime:[/bold] {runtime}")
-        console.print(f"[bold]Image:[/bold] {image}")
+        err_console.print(f"\n[bold]Runtime:[/bold] {runtime}")
+        err_console.print(f"[bold]Image:[/bold] {image}")
         if gpu:
-            console.print("[bold]GPU:[/bold] enabled")
+            err_console.print("[bold]GPU:[/bold] enabled")
 
-        console.print("\n[bold]Wrapped commands:[/bold]")
+        err_console.print("\n[bold]Wrapped commands:[/bold]")
         for cmd, path in wrapper_paths.items():
-            console.print(f"  • {cmd} → {path}")
+            err_console.print(f"  • {cmd} → {path}")
 
-        console.print("\n[bold cyan]Next steps:[/bold cyan]")
-        console.print(f"  1. Add {output_dir} to your PATH, or")
-        console.print(
+        err_console.print("\n[bold cyan]Next steps:[/bold cyan]")
+        err_console.print(f"  1. Add {output_dir} to your PATH, or")
+        err_console.print(
             f"  2. Generate a module file with: absconda module --wrapper-dir {output_dir}"
         )
 
     except WrapperError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
 
@@ -2123,19 +2179,19 @@ def module(
     try:
         module_file = generate_module(module_config)
 
-        console.print(f"[green]✓[/green] Generated module file: {module_file}")
-        console.print(f"\n[bold]Module name:[/bold] {name}")
-        console.print(f"[bold]Wrapper directory:[/bold] {wrapper_dir}")
-        console.print(f"[bold]Runtime:[/bold] {runtime}")
-        console.print(f"[bold]Image:[/bold] {image}")
+        err_console.print(f"[green]✓[/green] Generated module file: {module_file}")
+        err_console.print(f"\n[bold]Module name:[/bold] {name}")
+        err_console.print(f"[bold]Wrapper directory:[/bold] {wrapper_dir}")
+        err_console.print(f"[bold]Runtime:[/bold] {runtime}")
+        err_console.print(f"[bold]Image:[/bold] {image}")
 
-        console.print("\n[bold cyan]Usage:[/bold cyan]")
-        console.print(f"  module use {output_dir}")
-        console.print(f"  module load {name}")
-        console.print(f"  module help {name}")
+        err_console.print("\n[bold cyan]Usage:[/bold cyan]")
+        err_console.print(f"  module use {output_dir}")
+        err_console.print(f"  module load {name}")
+        err_console.print(f"  module help {name}")
 
     except ModuleError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
 
@@ -2236,9 +2292,9 @@ def config_set(
 
     try:
         path = cfg.set_config_value(key, parsed_value, system=system)
-        console.print(f"Set {key}={parsed_value} in {path}")
+        err_console.print(f"Set {key}={parsed_value} in {path}")
     except cfg.ConfigError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
 
@@ -2261,12 +2317,12 @@ def config_unset(
     try:
         path = cfg.unset_config_value(key, system=system)
         if path:
-            console.print(f"Removed {key} from {path}")
+            err_console.print(f"Removed {key} from {path}")
         else:
-            console.print(f"Key '{key}' not found.")
+            err_console.print(f"Key '{key}' not found.")
             raise typer.Exit(1)
     except cfg.ConfigError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
 
@@ -2301,10 +2357,10 @@ def config_edit(
     try:
         subprocess.run([editor, str(path)], check=True)
     except FileNotFoundError as exc:
-        console.print(f"[red]Error:[/red] Editor '{editor}' not found.")
+        err_console.print(f"[red]Error:[/red] Editor '{editor}' not found.")
         raise typer.Exit(1) from exc
     except subprocess.CalledProcessError as exc:
-        console.print(f"[red]Error:[/red] Editor exited with code {exc.returncode}")
+        err_console.print(f"[red]Error:[/red] Editor exited with code {exc.returncode}")
         raise typer.Exit(1) from exc
 
 

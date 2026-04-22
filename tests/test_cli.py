@@ -429,10 +429,10 @@ RUN echo "Custom Dockerfile content"
     assert "ghcr.io/example/custom-image:20260410" in commands[0][0]
 
 
-def test_build_with_dockerfile_requires_repository(tmp_path: Path) -> None:
-    """Test that --dockerfile without --file requires --repository."""
+def test_build_with_dockerfile_requires_repository_or_env_name(tmp_path: Path) -> None:
+    """Test that --dockerfile without --file and without a detectable env name errors."""
     dockerfile_path = tmp_path / "Dockerfile.custom"
-    dockerfile_path.write_text("FROM python:3.11")
+    dockerfile_path.write_text("FROM python:3.11")  # no CONDA_DEFAULT_ENV line
 
     runner = CliRunner()
     result = runner.invoke(
@@ -448,7 +448,81 @@ def test_build_with_dockerfile_requires_repository(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "--repository is required" in result.stdout
+    assert "--repository or --env-name is required" in result.stdout
+
+
+def test_build_with_dockerfile_auto_detects_env_name(monkeypatch, tmp_path: Path) -> None:
+    """Test that --dockerfile auto-detects env name from CONDA_DEFAULT_ENV line."""
+    dockerfile_path = tmp_path / "Dockerfile"
+    dockerfile_path.write_text(
+        "FROM mambaorg/micromamba:1.5.5 AS builder\n"
+        "ENV CONDA_DEFAULT_ENV=my-detected-env\n"
+        "ENV CONDA_PREFIX=/opt/conda/envs/my-detected-env\n"
+    )
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            "--dockerfile",
+            str(dockerfile_path),
+            "--repository",
+            "ghcr.io/example/my-detected-env",
+            "--context",
+            str(tmp_path),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert len(commands) == 1
+    assert "ghcr.io/example/my-detected-env:20260410" in commands[0][0]
+
+
+def test_build_with_dockerfile_and_env_name(monkeypatch, tmp_path: Path) -> None:
+    """Test that --dockerfile with --env-name derives repository from env name."""
+    dockerfile_path = tmp_path / "Dockerfile.custom"
+    dockerfile_path.write_text("FROM python:3.11-slim\nRUN echo 'custom'")
+
+    commands: List[Tuple[list[str], Path | None]] = []
+
+    def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
+        commands.append((command, cwd))
+
+    monkeypatch.setattr("absconda.cli._run_command", fake_run)
+    monkeypatch.setattr("absconda.cli._date_stamp", lambda: "20260410")
+    monkeypatch.setattr("absconda.cli._resolve_remote_options", lambda *a, **kw: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            "--dockerfile",
+            str(dockerfile_path),
+            "--env-name",
+            "my-env",
+            "--repository",
+            "ghcr.io/example/my-env",
+            "--context",
+            str(tmp_path),
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0
+    assert len(commands) == 1
+    assert "ghcr.io/example/my-env:20260410" in commands[0][0]
 
 
 def test_build_with_dockerfile_and_file_uses_env_name(monkeypatch, tmp_path: Path) -> None:

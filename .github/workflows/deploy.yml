@@ -16,6 +16,9 @@ jobs:
       contents: read
       id-token: write
 
+    outputs:
+      image_tag: ${{ steps.version.outputs.image_tag }}
+
     env:
       GCP_PROJECT: ${{ secrets.PROJECT_ID }}
       GCP_ZONE: australia-southeast1-a
@@ -40,13 +43,12 @@ jobs:
       - name: Install absconda
         run: pip install .
 
-      - name: Upgrade qxub to latest
-        run: /opt/qxub-venv/bin/pip install --force-reinstall --no-deps git+https://github.com/swarbricklab/qxub.git
-
       - name: Resolve image tag from project version
+        id: version
         run: |
           VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
           echo "IMAGE_TAG=$VERSION" >> "$GITHUB_ENV"
+          echo "image_tag=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Publish image via remote builder
         run: |
@@ -56,6 +58,38 @@ jobs:
             --tag "$IMAGE_TAG" \
             --remote-builder gcp-builder \
             --remote-off
+
+  deploy:
+    needs: publish
+    runs-on: [self-hosted, qxub-runner]
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      GCP_PROJECT: ${{ secrets.PROJECT_ID }}
+      GCP_ZONE: australia-southeast1-a
+      IMAGE_TAG: ${{ needs.publish.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve OS Login username
+        run: |
+          GCP_OS_LOGIN_USER=$(gcloud compute os-login describe-profile \
+            --format='value(posixAccounts[0].username)')
+          echo "GCP_OS_LOGIN_USER=$GCP_OS_LOGIN_USER" >> "$GITHUB_ENV"
+
+      - name: Upgrade qxub to latest
+        run: /opt/qxub-venv/bin/pip install --force-reinstall --no-deps git+https://github.com/swarbricklab/qxub.git
 
       - name: Fetch GHCR token from Secret Manager
         run: |
@@ -67,7 +101,6 @@ jobs:
           chmod 600 "$CRED_FILE"
           echo "GHCR_CRED_FILE=$CRED_FILE" >> "$GITHUB_ENV"
 
-      # Verbose qxub logging
       - name: Deploy to NCI
         run: |
           IMAGE_REF="ghcr.io/swarbricklab/absconda:${IMAGE_TAG}"

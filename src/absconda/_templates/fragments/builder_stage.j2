@@ -19,9 +19,11 @@ ABSCONDA_RENV_LOCK
 RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
     micromamba create -y -n {{ env_name }} -f /tmp/env.yaml && \
     micromamba run -n base conda-pack -p {{ env_dir }} -o /tmp/absconda-env.tar.gz && \
-    mkdir -p /tmp/absconda-env && \
-    tar -xzf /tmp/absconda-env.tar.gz -C /tmp/absconda-env && \
-    rm /tmp/absconda-env.tar.gz
+    rm -rf {{ env_dir }} && \
+    mkdir -p {{ env_dir }} && \
+    tar -xzf /tmp/absconda-env.tar.gz -C {{ env_dir }} && \
+    rm /tmp/absconda-env.tar.gz && \
+    if [ -x "{{ env_dir }}/bin/conda-unpack" ]; then micromamba run -n base python {{ env_dir }}/bin/conda-unpack && rm -rf {{ env_dir }}/conda-meta/history; fi
 
 {% if renv_enabled %}
 RUN <<'ABSCONDA_RENV'

@@ -644,7 +644,13 @@ def generate(
         output.write_text(dockerfile, encoding="utf-8")
         err_console.print(f"[green]Dockerfile written to[/green] {output}.")
     else:
-        console.print(dockerfile, highlight=False, markup=False, soft_wrap=False)
+        # Write directly to stdout to preserve exact byte content (including
+        # long lines). Rich's Console.print would hard-wrap at the detected
+        # terminal width when stdout is redirected to a file, corrupting the
+        # generated Dockerfile.
+        sys.stdout.write(dockerfile)
+        if not dockerfile.endswith("\n"):
+            sys.stdout.write("\n")
 
 
 @app.command()

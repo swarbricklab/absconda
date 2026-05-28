@@ -116,6 +116,57 @@ def test_apply_errors_without_image_ref(workflow_dir: Path) -> None:
         wf.apply_container_replacements(workflow_dir, manifest)
 
 
+def test_multiline_conda_directive_is_rewritten(tmp_path: Path) -> None:
+    """Snakemake allows ``conda:`` and the YAML path on two separate lines."""
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "tools.yaml").write_text(
+        "name: tools\nchannels: [conda-forge]\ndependencies: [python=3.11]\n",
+        encoding="utf-8",
+    )
+    snake = tmp_path / "Snakefile"
+    snake.write_text(
+        "rule run_tool:\n"
+        '    input: "in.txt"\n'
+        '    output: "out.txt"\n'
+        "    conda:\n"
+        '        "envs/tools.yaml"\n'
+        '    shell: "echo {input} > {output}"\n',
+        encoding="utf-8",
+    )
+
+    references, envs_entries = wf.scan_snakemake(tmp_path)
+    assert len(references) == 1
+    assert references[0].rule == "run_tool"
+    assert len(envs_entries) == 1
+    entry = envs_entries[0]
+    entry.image_ref = "ghcr.io/example/tools:v1"
+
+    manifest = wf.build_manifest(tmp_path)
+    manifest.envs[0].image_ref = "ghcr.io/example/tools:v1"
+    changes = wf.apply_container_replacements(tmp_path, manifest)
+    snake_change = next(c for c in changes if c.file.name == "Snakefile")
+    assert snake_change.changed
+
+    expected = (
+        "rule run_tool:\n"
+        '    input: "in.txt"\n'
+        '    output: "out.txt"\n'
+        "    # absconda: replaced conda env with container\n"
+        "    # conda:\n"
+        '        # "envs/tools.yaml"\n'
+        '    container: "docker://ghcr.io/example/tools:v1"\n'
+        '    shell: "echo {input} > {output}"\n'
+    )
+    assert snake_change.updated == expected
+
+    # Revert restores the multi-line form byte-identically.
+    snake.write_text(snake_change.updated, encoding="utf-8")
+    reverts = wf.revert_container_replacements(tmp_path)
+    snake_revert = next(c for c in reverts if c.file.name == "Snakefile")
+    assert snake_revert.updated == snake_change.original
+
+
 def test_revert_restores_conda_directive(workflow_dir: Path) -> None:
     manifest = wf.build_manifest(workflow_dir)
     for entry in manifest.envs:

@@ -28,10 +28,15 @@ class WorkflowError(Exception):
 
 SNAKEMAKE_GLOBS = ("Snakefile", "*.smk", "workflow/Snakefile", "workflow/*.smk")
 
-# Captures ``conda: "envs/foo.yaml"`` or ``conda: 'envs/foo.yaml'``.
+# Captures ``conda:`` directives in both forms:
+#   single-line:  conda: "envs/foo.yaml"
+#   multi-line:   conda:
+#                     "envs/foo.yaml"
 # We do not match unquoted forms or expressions (``conda: f"...".format(...)``).
 _CONDA_RE = re.compile(
-    r"""(?P<indent>^[ \t]*)conda:\s*['"](?P<path>[^'"]+\.ya?ml)['"]\s*$""",
+    r"""(?P<indent>^[ \t]*)conda:[ \t]*"""
+    r"""(?:\r?\n[ \t]+)?"""
+    r"""(?P<quote>['"])(?P<path>[^'"]+\.ya?ml)(?P=quote)[ \t]*$""",
     re.MULTILINE,
 )
 
@@ -39,6 +44,14 @@ _CONDA_RE = re.compile(
 _RULE_RE = re.compile(r"^(?P<indent>[ \t]*)rule\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:")
 
 MARKER_COMMENT = "# absconda: replaced conda env with container"
+
+# Matches a previously-injected marker block so we can refresh tags or revert.
+_MARKER_BLOCK_RE = re.compile(
+    r"(?P<indent>^[ \t]*)# absconda: replaced conda env with container[ \t]*\r?\n"
+    r"(?P<commented>(?:[ \t]*#[^\r\n]*\r?\n)+)"
+    r"(?P<container_line>[ \t]*container:[ \t]*['\"]docker://[^'\"]+['\"][ \t]*)$",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -330,69 +343,96 @@ def _rewrite_file(
     *,
     require_image_ref: bool,
 ) -> str:
-    """Apply the replacement to a single file's text."""
+    """Apply the replacement to a single file's text.
 
-    lines = text.splitlines(keepends=True)
-    output: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    Runs in two passes: first refresh any existing marker blocks (so re-running
+    after a tag bump just rewrites the ``container:`` line), then transform any
+    raw ``conda:`` directives still present.
+    """
 
-        # Detect an existing absconda marker block and refresh the container line.
-        if MARKER_COMMENT in line and _is_marker_line(line):
-            marker_indent = line[: len(line) - len(line.lstrip())]
-            # Expect: marker / commented conda / container
-            if (
-                i + 2 < len(lines)
-                and _is_commented_conda(lines[i + 1])
-                and _is_container_line(lines[i + 2])
-            ):
-                env_match = _match_conda_line(_uncomment(lines[i + 1]))
-                if env_match:
-                    env_rel = env_match.group("path")
-                    env_abs = (file_dir / env_rel).resolve()
-                    entry = lookup.get(str(env_abs))
-                    if entry and entry.image_ref:
-                        output.append(line)
-                        output.append(lines[i + 1])
-                        output.append(f'{marker_indent}container: "docker://{entry.image_ref}"\n')
-                        i += 3
-                        continue
-                # Fall through if we cannot refresh — leave block untouched.
-                output.append(line)
-                output.append(lines[i + 1])
-                output.append(lines[i + 2])
-                i += 3
-                continue
+    text = _refresh_marker_blocks(text, file_dir, lookup)
 
-        match = _match_conda_line(line)
-        if match:
-            env_rel = match.group("path")
-            indent = match.group("indent")
-            env_abs = (file_dir / env_rel).resolve()
-            entry = lookup.get(str(env_abs))
-            if entry is None or (require_image_ref and not entry.image_ref):
-                if require_image_ref:
-                    raise WorkflowError(
-                        f"No image_ref in manifest for env file '{env_rel}'. "
-                        f"Run 'absconda workflow containerise' first."
-                    )
-                output.append(line)
-                i += 1
-                continue
+    def replace_conda(match: re.Match[str]) -> str:
+        env_rel = match.group("path")
+        indent = match.group("indent")
+        env_abs = (file_dir / env_rel).resolve()
+        entry = lookup.get(str(env_abs))
+        if entry is None or (require_image_ref and not entry.image_ref):
+            if require_image_ref:
+                raise WorkflowError(
+                    f"No image_ref in manifest for env file '{env_rel}'. "
+                    f"Run 'absconda workflow containerise' first."
+                )
+            return match.group(0)
 
-            newline = _detect_newline(line)
-            quote = match.group("quote")
-            output.append(f"{indent}{MARKER_COMMENT}{newline}")
-            output.append(f"{indent}# conda: {quote}{env_rel}{quote}{newline}")
-            output.append(f'{indent}container: "docker://{entry.image_ref}"{newline}')
-            i += 1
+        original_span = match.group(0)
+        commented = _comment_block(original_span)
+        return (
+            f"{indent}{MARKER_COMMENT}\n"
+            f"{commented}\n"
+            f'{indent}container: "docker://{entry.image_ref}"'
+        )
+
+    return _CONDA_RE.sub(replace_conda, text)
+
+
+def _refresh_marker_blocks(text: str, file_dir: Path, lookup: dict[str, EnvEntry]) -> str:
+    """Rewrite the ``container:`` line in each existing marker block."""
+
+    def refresh(match: re.Match[str]) -> str:
+        commented_text = match.group("commented")
+        uncommented = _uncomment_block(commented_text)
+        conda_match = _CONDA_RE.search(uncommented)
+        if not conda_match:
+            return match.group(0)
+        env_rel = conda_match.group("path")
+        env_abs = (file_dir / env_rel).resolve()
+        entry = lookup.get(str(env_abs))
+        if entry is None or not entry.image_ref:
+            return match.group(0)
+        indent = match.group("indent")
+        # Strip trailing newline from commented_text — we'll add it back.
+        commented_block = commented_text.rstrip("\r\n")
+        return (
+            f"{indent}{MARKER_COMMENT}\n"
+            f"{commented_block}\n"
+            f'{indent}container: "docker://{entry.image_ref}"'
+        )
+
+    return _MARKER_BLOCK_RE.sub(refresh, text)
+
+
+def _comment_block(text: str) -> str:
+    """Prefix each line with ``# `` after its existing indent.
+
+    Preserves blank/whitespace-only lines as-is (so revert is byte-identical).
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            out.append(line)
             continue
+        indent_len = len(line) - len(line.lstrip())
+        out.append(line[:indent_len] + "# " + line[indent_len:])
+    return "\n".join(out)
 
-        output.append(line)
-        i += 1
 
-    return "".join(output)
+def _uncomment_block(text: str) -> str:
+    """Inverse of :func:`_comment_block`."""
+    out: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            out.append(line)
+            continue
+        indent_len = len(line) - len(line.lstrip())
+        rest = line[indent_len:]
+        if rest.startswith("# "):
+            out.append(line[:indent_len] + rest[2:])
+        elif rest.startswith("#"):
+            out.append(line[:indent_len] + rest[1:])
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def revert_container_replacements(root: Path) -> list[FileChange]:
@@ -407,68 +447,11 @@ def revert_container_replacements(root: Path) -> list[FileChange]:
 
 
 def _revert_file(text: str) -> str:
-    lines = text.splitlines(keepends=True)
-    output: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if (
-            MARKER_COMMENT in line
-            and _is_marker_line(line)
-            and i + 2 < len(lines)
-            and _is_commented_conda(lines[i + 1])
-            and _is_container_line(lines[i + 2])
-        ):
-            # Re-emit the conda line uncommented.
-            output.append(_uncomment(lines[i + 1]))
-            i += 3
-            continue
-        output.append(line)
-        i += 1
-    return "".join(output)
+    def revert(match: re.Match[str]) -> str:
+        commented = match.group("commented").rstrip("\r\n")
+        return _uncomment_block(commented)
 
-
-def _match_conda_line(line: str) -> Optional[re.Match[str]]:
-    """Match a single line (without relying on MULTILINE anchors)."""
-    stripped = line.rstrip("\r\n")
-    return re.match(
-        r"""(?P<indent>^[ \t]*)conda:\s*(?P<quote>['"])(?P<path>[^'"]+\.ya?ml)(?P=quote)\s*$""",
-        stripped,
-    )
-
-
-def _detect_newline(line: str) -> str:
-    if line.endswith("\r\n"):
-        return "\r\n"
-    if line.endswith("\n"):
-        return "\n"
-    return "\n"
-
-
-def _is_marker_line(line: str) -> bool:
-    return line.lstrip().startswith(MARKER_COMMENT)
-
-
-def _is_commented_conda(line: str) -> bool:
-    stripped = line.lstrip()
-    if not stripped.startswith("#"):
-        return False
-    return bool(_match_conda_line(_uncomment(line)))
-
-
-def _is_container_line(line: str) -> bool:
-    return bool(re.match(r"^\s*container:\s*['\"]docker://", line))
-
-
-def _uncomment(line: str) -> str:
-    """Strip a leading ``# `` (or ``#``) from a commented line, preserving indent."""
-    stripped = line.lstrip()
-    indent = line[: len(line) - len(stripped)]
-    if stripped.startswith("# "):
-        return indent + stripped[2:]
-    if stripped.startswith("#"):
-        return indent + stripped[1:]
-    return line
+    return _MARKER_BLOCK_RE.sub(revert, text)
 
 
 # ---------------------------------------------------------------------------

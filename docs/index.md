@@ -42,11 +42,12 @@ Step-by-step tutorials for common workflows.
 - [R + renv Integration](guides/renv-integration.md) - Combining R with Conda
 - [Requirements Mode](guides/requirements-mode.md) - Using pip requirements.txt
 - [Advanced Templating](guides/advanced-templating.md) - Custom Dockerfile templates
+- [Workflow Containerise](guides/workflow-containerise.md) - Convert Snakemake `conda:` to `container:`
 
 ### [Reference](reference/)
 Detailed documentation for looking up specifics.
 
-- [CLI Reference](reference/cli.md) - All commands and options (`generate`, `build`, `publish`, `deploy`, `wrap`, `module`, `remote`, `config`)
+- [CLI Reference](reference/cli.md) - All commands and options (`generate`, `build`, `publish`, `deploy`, `wrap`, `module`, `remote`, `config`, `workflow`)
 - [Environment Files](reference/environment-files.md) - YAML format specification
 - [Configuration](reference/configuration.md) - Config files and XDG paths
 - [Policies](reference/policies.md) - Policy profiles and constraints

@@ -802,6 +802,68 @@ System config: /etc/xdg/absconda/config.yaml
 
 ---
 
+## Workflow Commands
+
+Scan a Snakemake workflow, containerise each unique conda env, and rewrite
+the workflow to use `container:` directives. See the
+[Workflow Containerise guide](../guides/workflow-containerise.md) for the full
+walkthrough.
+
+### workflow scan
+
+Discover `conda:` directives and write `absconda-workflow.yaml`.
+
+```bash
+absconda workflow scan [PATH] [--output PATH] [--dry-run] [--force]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `PATH` | Workflow root directory | `.` |
+| `--output PATH` | Manifest output path | `<PATH>/absconda-workflow.yaml` |
+| `--dry-run` | Print manifest to stdout, don't write | `false` |
+| `--force` | Overwrite an existing manifest | `false` |
+| `--type` | Workflow type (snakemake only in v1) | `snakemake` |
+
+### workflow containerise
+
+Build and push one image per unique env file in the manifest. Updates the
+manifest in place as each image succeeds, so partial failures resume cleanly.
+
+```bash
+absconda workflow containerise [PATH] [--tag TAG] [--remote-builder NAME] ...
+```
+
+Accepts the same `--builder-base`, `--runtime-base`, `--multi-stage`,
+`--remote-builder`, `--remote-wait`, `--remote-off`, `--build-arg`,
+`--template` flags as `absconda publish`. Use `--force-rebuild` to rebuild
+images that already have an `image_ref` recorded.
+
+### workflow update
+
+Rewrite the workflow files to add `container:` alongside each `conda:`
+directive (which is commented out, not removed).
+
+```bash
+absconda workflow update [PATH] [--manifest PATH] [--dry-run] [--revert]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--manifest PATH` | Manifest to read image refs from | `<PATH>/absconda-workflow.yaml` |
+| `--dry-run` | Print diff but don't modify files | `false` |
+| `--revert` | Strip absconda-injected blocks, restore `conda:` | `false` |
+
+### workflow apply
+
+One-shot: scan → containerise → update.
+
+```bash
+absconda workflow apply [PATH] [--tag TAG] [--remote-builder NAME] ...
+```
+
+---
+
 ## Environment Variables
 
 Absconda recognizes these environment variables:

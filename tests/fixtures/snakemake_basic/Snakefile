@@ -1,0 +1,23 @@
+rule all:
+    input: "results/multiqc.html"
+
+
+rule fastqc:
+    input: "data/{sample}.fq.gz"
+    output: "qc/{sample}_fastqc.html"
+    conda: "envs/qc.yaml"
+    shell: "fastqc {input} -o qc/"
+
+
+rule multiqc:
+    input: expand("qc/{sample}_fastqc.html", sample=["a", "b"])
+    output: "results/multiqc.html"
+    conda: 'envs/qc.yaml'
+    shell: "multiqc qc/ -o results/"
+
+
+rule align:
+    input: "data/{sample}.fq.gz"
+    output: "aligned/{sample}.bam"
+    conda: "envs/align.yaml"
+    shell: "bwa mem ref.fa {input} | samtools sort -o {output}"

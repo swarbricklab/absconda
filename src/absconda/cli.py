@@ -53,6 +53,11 @@ app.add_typer(remote_app, name="remote")
 config_app = typer.Typer(help="Get and set absconda configuration options.")
 app.add_typer(config_app, name="config")
 
+workflow_app = typer.Typer(
+    help="Containerise conda environments referenced by a Snakemake workflow."
+)
+app.add_typer(workflow_app, name="workflow")
+
 REMOTE_CONFIG_OPTION = typer.Option(
     None,
     "--config",
@@ -2193,6 +2198,323 @@ def module(
     except ModuleError as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
+
+
+# ---------------------------------------------------------------------------
+# Workflow subcommands
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_MANIFEST_NAME = "absconda-workflow.yaml"
+
+
+def _resolve_manifest_path(workflow_root: Path, manifest: Optional[Path]) -> Path:
+    if manifest is not None:
+        return manifest
+    return workflow_root / DEFAULT_MANIFEST_NAME
+
+
+def _ensure_manifest(workflow_root: Path, manifest_path: Path):
+    from . import workflow as workflow_mod
+
+    if not manifest_path.exists():
+        err_console.print(
+            f"[red]Error:[/red] Manifest '{manifest_path}' not found. "
+            "Run 'absconda workflow scan' first."
+        )
+        raise typer.Exit(code=1)
+    try:
+        return workflow_mod.load_manifest(manifest_path)
+    except workflow_mod.WorkflowError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@workflow_app.command("scan")
+def workflow_scan(
+    path: Path = typer.Argument(Path("."), help="Workflow root directory."),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help=f"Manifest output path (default: <path>/{DEFAULT_MANIFEST_NAME}).",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print manifest to stdout, don't write."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing manifest."),
+    workflow_type: str = typer.Option(
+        "snakemake", "--type", help="Workflow type (snakemake only in v1)."
+    ),
+) -> None:
+    """Discover conda: directives in a Snakemake workflow and write a manifest."""
+    from . import workflow as workflow_mod
+
+    if workflow_type != "snakemake":
+        err_console.print(
+            f"[red]Error:[/red] Workflow type '{workflow_type}' is not yet supported."
+        )
+        raise typer.Exit(code=1)
+
+    workflow_root = path.resolve()
+    if not workflow_root.is_dir():
+        err_console.print(f"[red]Error:[/red] '{workflow_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    manifest_path = _resolve_manifest_path(workflow_root, output)
+    if manifest_path.exists() and not force and not dry_run:
+        err_console.print(
+            f"[red]Error:[/red] Manifest '{manifest_path}' already exists. "
+            "Use --force to overwrite."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        manifest = workflow_mod.build_manifest(workflow_root)
+    except workflow_mod.WorkflowError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not manifest.envs:
+        err_console.print(
+            "[bold yellow]warning[/bold yellow]: No conda: directives found in workflow."
+        )
+
+    if dry_run:
+        import yaml as _yaml
+
+        payload = {
+            "workflow": {
+                "type": manifest.workflow_type,
+                "root": manifest.workflow_root,
+                "scanned_at": manifest.scanned_at,
+            },
+            "envs": [entry.__dict__ for entry in manifest.envs],
+            "references": manifest.references,
+        }
+        console.print(_yaml.safe_dump(payload, sort_keys=False), highlight=False, markup=False)
+        return
+
+    workflow_mod.save_manifest(manifest, manifest_path)
+    err_console.print(
+        f"[green]✓[/green] Wrote {manifest_path} "
+        f"({len(manifest.envs)} unique env(s), {len(manifest.references)} reference(s))."
+    )
+    for entry in manifest.envs:
+        rules = ", ".join(entry.rules) if entry.rules else "(workflow-level)"
+        err_console.print(f"  • {entry.env_file} → {entry.env_name} ({rules})")
+
+
+@workflow_app.command("containerise")
+def workflow_containerise(
+    path: Path = typer.Argument(Path("."), help="Workflow root directory."),
+    manifest: Optional[Path] = typer.Option(
+        None, "--manifest", help="Manifest path (default: <path>/absconda-workflow.yaml)."
+    ),
+    scan_first: bool = typer.Option(
+        True,
+        "--scan/--no-scan",
+        help="Auto-scan if no manifest exists yet.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Image tag for envs that don't have one set (default: YYYYMMDD).",
+    ),
+    template: Optional[Path] = typer.Option(None, "--template", help="Custom Dockerfile template."),
+    builder_base: Optional[str] = typer.Option(None, "--builder-base"),
+    runtime_base: Optional[str] = typer.Option(None, "--runtime-base"),
+    multi_stage: Optional[bool] = typer.Option(None, "--multi-stage/--single-stage"),
+    remote_builder: Optional[str] = typer.Option(None, "--remote-builder"),
+    remote_config: Optional[Path] = typer.Option(None, "--remote-config"),
+    remote_wait: int = typer.Option(900, "--remote-wait"),
+    remote_off: bool = typer.Option(False, "--remote-off"),
+    build_arg: Optional[list[str]] = typer.Option(None, "--build-arg"),
+    force_rebuild: bool = typer.Option(
+        False,
+        "--force-rebuild",
+        help="Rebuild even when image_ref is already set in the manifest.",
+    ),
+) -> None:
+    """Build and push one image per unique env file in the manifest."""
+    from . import workflow as workflow_mod
+
+    workflow_root = path.resolve()
+    manifest_path = _resolve_manifest_path(workflow_root, manifest)
+
+    if not manifest_path.exists():
+        if not scan_first:
+            err_console.print(
+                f"[red]Error:[/red] Manifest '{manifest_path}' not found and --no-scan was set."
+            )
+            raise typer.Exit(code=1)
+        err_console.print(f"Manifest not found at {manifest_path}, scanning workflow first.")
+        try:
+            manifest_obj = workflow_mod.build_manifest(workflow_root)
+        except workflow_mod.WorkflowError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        workflow_mod.save_manifest(manifest_obj, manifest_path)
+    else:
+        manifest_obj = _ensure_manifest(workflow_root, manifest_path)
+
+    if not manifest_obj.envs:
+        err_console.print("[bold yellow]warning[/bold yellow]: Manifest has no env entries.")
+        raise typer.Exit(code=0)
+
+    _print_policy_banner()
+
+    for entry in manifest_obj.envs:
+        if entry.image_ref and not force_rebuild:
+            err_console.print(
+                f"[dim]Skipping {entry.env_file} → {entry.image_ref} "
+                f"(already published; use --force-rebuild to override)[/dim]"
+            )
+            continue
+
+        env_path = (workflow_root / entry.env_file).resolve()
+        if not env_path.is_file():
+            err_console.print(
+                f"[red]Error:[/red] Env file '{entry.env_file}' missing for entry {entry.env_name}."
+            )
+            raise typer.Exit(code=1)
+
+        err_console.print(
+            f"\n[bold cyan]Building[/bold cyan] {entry.env_name} from {entry.env_file}"
+        )
+        image_ref = _publish_and_get_ref(
+            file=env_path,
+            tarball=None,
+            requirements=None,
+            snapshot=None,
+            repository=entry.image,
+            tag=tag,
+            env_name=entry.env_name or None,
+            template=template,
+            builder_base=builder_base,
+            runtime_base=runtime_base,
+            multi_stage=multi_stage,
+            context=workflow_root,
+            renv_lock=None,
+            remote_builder=remote_builder,
+            remote_config=remote_config,
+            remote_wait=remote_wait,
+            remote_off=remote_off,
+            dockerfile=None,
+            build_arg=build_arg,
+        )
+
+        # Update manifest entry and persist incrementally so partial failures resume cleanly.
+        entry.image_ref = image_ref
+        if ":" in image_ref:
+            repo, resolved_tag = image_ref.rsplit(":", 1)
+            entry.image = repo
+            entry.tag = resolved_tag
+        workflow_mod.save_manifest(manifest_obj, manifest_path)
+        err_console.print(f"[green]✓ Published[/green] {image_ref}")
+
+    err_console.print(f"\n[bold green]Done.[/bold green] Manifest: {manifest_path}")
+
+
+@workflow_app.command("update")
+def workflow_update(
+    path: Path = typer.Argument(Path("."), help="Workflow root directory."),
+    manifest: Optional[Path] = typer.Option(
+        None, "--manifest", help="Manifest path (default: <path>/absconda-workflow.yaml)."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print diff but don't modify any files."),
+    revert: bool = typer.Option(
+        False, "--revert", help="Strip absconda-injected container: blocks, restoring conda:."
+    ),
+) -> None:
+    """Rewrite Snakemake files to use ``container:`` alongside the original ``conda:``."""
+    from . import workflow as workflow_mod
+
+    workflow_root = path.resolve()
+    if not workflow_root.is_dir():
+        err_console.print(f"[red]Error:[/red] '{workflow_root}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    if revert:
+        try:
+            changes = workflow_mod.revert_container_replacements(workflow_root)
+        except workflow_mod.WorkflowError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    else:
+        manifest_path = _resolve_manifest_path(workflow_root, manifest)
+        manifest_obj = _ensure_manifest(workflow_root, manifest_path)
+        try:
+            changes = workflow_mod.apply_container_replacements(
+                workflow_root, manifest_obj, require_image_ref=True
+            )
+        except workflow_mod.WorkflowError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+    changed = [c for c in changes if c.changed]
+    if not changed:
+        err_console.print("[dim]No files needed changes.[/dim]")
+        return
+
+    for change in changed:
+        diff = workflow_mod.unified_diff(change)
+        err_console.print(diff, highlight=False, markup=False)
+
+    if dry_run:
+        err_console.print(f"[dim]Dry run — {len(changed)} file(s) would be modified.[/dim]")
+        return
+
+    for change in changed:
+        change.file.write_text(change.updated, encoding="utf-8")
+        err_console.print(f"[green]✓[/green] Updated {change.file}")
+
+
+@workflow_app.command("apply")
+def workflow_apply(
+    path: Path = typer.Argument(Path("."), help="Workflow root directory."),
+    manifest: Optional[Path] = typer.Option(None, "--manifest"),
+    tag: Optional[str] = typer.Option(None, "--tag"),
+    template: Optional[Path] = typer.Option(None, "--template"),
+    builder_base: Optional[str] = typer.Option(None, "--builder-base"),
+    runtime_base: Optional[str] = typer.Option(None, "--runtime-base"),
+    multi_stage: Optional[bool] = typer.Option(None, "--multi-stage/--single-stage"),
+    remote_builder: Optional[str] = typer.Option(None, "--remote-builder"),
+    remote_config: Optional[Path] = typer.Option(None, "--remote-config"),
+    remote_wait: int = typer.Option(900, "--remote-wait"),
+    remote_off: bool = typer.Option(False, "--remote-off"),
+    build_arg: Optional[list[str]] = typer.Option(None, "--build-arg"),
+    force_rebuild: bool = typer.Option(False, "--force-rebuild"),
+    dry_run_update: bool = typer.Option(
+        False,
+        "--dry-run-update",
+        help="Build/push, but only diff the workflow file edits without applying them.",
+    ),
+) -> None:
+    """One-shot: scan → containerise → update."""
+    ctx = click.get_current_context()
+    ctx.invoke(
+        workflow_containerise,
+        path=path,
+        manifest=manifest,
+        scan_first=True,
+        tag=tag,
+        template=template,
+        builder_base=builder_base,
+        runtime_base=runtime_base,
+        multi_stage=multi_stage,
+        remote_builder=remote_builder,
+        remote_config=remote_config,
+        remote_wait=remote_wait,
+        remote_off=remote_off,
+        build_arg=build_arg,
+        force_rebuild=force_rebuild,
+    )
+    ctx.invoke(
+        workflow_update,
+        path=path,
+        manifest=manifest,
+        dry_run=dry_run_update,
+        revert=False,
+    )
 
 
 # ---------------------------------------------------------------------------

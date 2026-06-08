@@ -28,6 +28,14 @@ RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dea
     apt-get install -y --no-install-recommends google-cloud-cli && \
     rm -rf /var/lib/apt/lists/*
 
+# NumPy gives gcloud's IAP TCP forwarding a faster tunnel (otherwise gcloud emits
+# a performance warning on every connection). Pin gcloud to this image's Python
+# (where numpy is installed) rather than any apt-pulled /usr/bin/python3, and
+# allow it to load site packages so it actually sees numpy.
+RUN pip install --no-cache-dir numpy
+ENV CLOUDSDK_PYTHON=/usr/local/bin/python3 \
+    CLOUDSDK_PYTHON_SITEPACKAGES=1
+
 # Install absconda
 COPY . /opt/absconda
 WORKDIR /opt/absconda

@@ -50,6 +50,14 @@ class AbscondaConfig:
     registry: str = "ghcr.io"
     organization: Optional[str] = None
 
+    # GHCR authentication for local `singularity pull` of private images.
+    # Opt-in: when ghcr_auth_source is None the feature is off and behaviour is
+    # unchanged. Currently only "gcp-secret-manager" is supported, which fetches
+    # the username/token from GCP Secret Manager at pull time.
+    ghcr_auth_source: Optional[str] = None
+    ghcr_user_secret: str = "absconda-github-username"
+    ghcr_token_secret: str = "absconda-github-token"
+
     # Wrapper generation settings
     wrapper_default_runtime: str = "singularity"
     wrapper_default_output_dir: Optional[Path] = None
@@ -179,6 +187,14 @@ def load_config() -> AbscondaConfig:
     registry = merged_data.get("registry", "ghcr.io")
     organization = merged_data.get("organization")
 
+    # Extract GHCR auth settings (nested under `ghcr_auth` in YAML)
+    ghcr_auth_config = merged_data.get("ghcr_auth", {})
+    if not isinstance(ghcr_auth_config, dict):
+        ghcr_auth_config = {}
+    ghcr_auth_source = ghcr_auth_config.get("source")
+    ghcr_user_secret = ghcr_auth_config.get("user_secret", "absconda-github-username")
+    ghcr_token_secret = ghcr_auth_config.get("token_secret", "absconda-github-token")
+
     # Extract wrapper settings
     wrappers_config = merged_data.get("wrappers", {})
     wrapper_default_runtime = wrappers_config.get("default_runtime", "singularity")
@@ -217,6 +233,9 @@ def load_config() -> AbscondaConfig:
         template_dir=template_dir,
         registry=registry,
         organization=organization,
+        ghcr_auth_source=ghcr_auth_source,
+        ghcr_user_secret=ghcr_user_secret,
+        ghcr_token_secret=ghcr_token_secret,
         wrapper_default_runtime=wrapper_default_runtime,
         wrapper_default_output_dir=wrapper_default_output_dir,
         wrapper_image_cache=wrapper_image_cache,

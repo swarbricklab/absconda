@@ -679,7 +679,9 @@ def test_deploy_pulls_and_wraps(monkeypatch, tmp_path: Path) -> None:
     def fake_run(command: list[str], *, cwd: Path | None = None) -> None:
         commands.append((command, cwd))
 
-    def fake_run_filtered(command: list[str], *, cwd: Path | None = None, noise_re=None) -> None:
+    def fake_run_filtered(
+        command: list[str], *, cwd: Path | None = None, noise_re=None, env=None
+    ) -> None:
         commands.append((command, cwd))
 
     monkeypatch.setattr("absconda.cli._run_command", fake_run)
@@ -731,3 +733,76 @@ def test_deploy_requires_image_or_file(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "image reference" in result.stdout.lower() or "Error" in result.stdout
+
+
+def test_ghcr_pull_env_disabled_by_default() -> None:
+    from absconda import cli
+    from absconda.config import AbscondaConfig
+
+    assert cli._ghcr_pull_env(AbscondaConfig(remote_builders={})) == {}
+
+
+def test_ghcr_pull_env_fetches_secrets(monkeypatch) -> None:
+    from absconda import cli
+    from absconda.config import AbscondaConfig
+
+    config = AbscondaConfig(
+        remote_builders={},
+        gcp_project="proj",
+        ghcr_auth_source="gcp-secret-manager",
+        ghcr_user_secret="user-secret",
+        ghcr_token_secret="token-secret",
+    )
+    for var in (
+        "SINGULARITY_DOCKER_USERNAME",
+        "SINGULARITY_DOCKER_PASSWORD",
+        "APPTAINER_DOCKER_USERNAME",
+        "APPTAINER_DOCKER_PASSWORD",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_fetch(secret: str, *, project: str | None) -> str:
+        calls.append((secret, project))
+        return {"user-secret": "alice", "token-secret": "ghp_xxx"}[secret]
+
+    monkeypatch.setattr(cli, "_fetch_gcp_secret", fake_fetch)
+
+    assert cli._ghcr_pull_env(config) == {
+        "SINGULARITY_DOCKER_USERNAME": "alice",
+        "SINGULARITY_DOCKER_PASSWORD": "ghp_xxx",
+        "APPTAINER_DOCKER_USERNAME": "alice",
+        "APPTAINER_DOCKER_PASSWORD": "ghp_xxx",
+    }
+    assert calls == [("user-secret", "proj"), ("token-secret", "proj")]
+
+
+def test_ghcr_pull_env_respects_existing_env(monkeypatch) -> None:
+    from absconda import cli
+    from absconda.config import AbscondaConfig
+
+    config = AbscondaConfig(remote_builders={}, ghcr_auth_source="gcp-secret-manager")
+    monkeypatch.setenv("SINGULARITY_DOCKER_USERNAME", "preset")
+
+    def boom(*args: object, **kwargs: object) -> str:
+        raise AssertionError("must not fetch secrets when env is already set")
+
+    monkeypatch.setattr(cli, "_fetch_gcp_secret", boom)
+    assert cli._ghcr_pull_env(config) == {}
+
+
+def test_fetch_gcp_secret_strips_trailing_newline(monkeypatch) -> None:
+    from absconda import cli
+
+    class _Result:
+        stdout = "ghp_token\n"
+
+    def fake_run(command, check, capture_output, text):  # type: ignore[no-untyped-def]
+        assert command[:5] == ["gcloud", "secrets", "versions", "access", "latest"]
+        assert "--secret=my-secret" in command
+        assert "--project=proj" in command
+        return _Result()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._fetch_gcp_secret("my-secret", project="proj") == "ghp_token"

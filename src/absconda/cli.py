@@ -9,7 +9,9 @@ subcommand, and type annotations automatically map to option parsing and help te
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import os
 import re
 import subprocess
 import sys
@@ -23,6 +25,7 @@ import typer
 from rich.console import Console
 
 from . import __version__, remote
+from . import config as cfg
 from .environment import (
     EnvironmentLoadError,
     LoadReport,
@@ -323,6 +326,7 @@ def _run_command_filtered(
     *,
     cwd: Optional[Path] = None,
     noise_re: Optional[re.Pattern[str]] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> None:
     """Run a command, optionally filtering matching lines from stderr."""
     try:
@@ -331,6 +335,7 @@ def _run_command_filtered(
             cwd=str(cwd) if cwd else None,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
         assert proc.stderr is not None  # for type checker
         for line in proc.stderr:
@@ -348,6 +353,64 @@ def _run_command_filtered(
         raise typer.Exit(code=exc.returncode) from exc
 
 
+def _fetch_gcp_secret(secret: str, *, project: Optional[str]) -> str:
+    """Fetch the latest version of a GCP Secret Manager secret as a string.
+
+    The secret value is returned but never logged; only the secret *name* appears
+    in any error message.
+    """
+    command = ["gcloud", "secrets", "versions", "access", "latest", f"--secret={secret}"]
+    if project:
+        command.append(f"--project={project}")
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:  # pragma: no cover - depends on host setup
+        err_console.print(f"[red]Error:[/red] 'gcloud' not found while fetching secret '{secret}'.")
+        raise typer.Exit(code=1) from exc
+    except subprocess.CalledProcessError as exc:
+        err_console.print(
+            f"[red]Error:[/red] Failed to read secret '{secret}' from GCP Secret Manager "
+            f"(exit code {exc.returncode}). Check the secret name and your gcloud auth."
+        )
+        raise typer.Exit(code=1) from exc
+    # Secret Manager appends no trailing newline, but tokens are sensitive to
+    # surrounding whitespace, so strip just the trailing newline gcloud may add.
+    return result.stdout.rstrip("\n")
+
+
+def _ghcr_pull_env(config: cfg.AbscondaConfig) -> Dict[str, str]:
+    """Build registry-auth env vars for `singularity pull` from configured creds.
+
+    Returns the Singularity and Apptainer ``*_DOCKER_USERNAME``/``*_DOCKER_PASSWORD``
+    variables when GHCR auth is enabled in config, or an empty dict otherwise.
+    Pre-existing values in the environment are respected (not overridden) so a
+    manual export keeps working. Credentials are fetched lazily, only here.
+    """
+    if config.ghcr_auth_source != "gcp-secret-manager":
+        return {}
+
+    # Respect creds the user already exported for either runtime.
+    if any(
+        os.environ.get(var)
+        for var in (
+            "SINGULARITY_DOCKER_USERNAME",
+            "SINGULARITY_DOCKER_PASSWORD",
+            "APPTAINER_DOCKER_USERNAME",
+            "APPTAINER_DOCKER_PASSWORD",
+        )
+    ):
+        return {}
+
+    username = _fetch_gcp_secret(config.ghcr_user_secret, project=config.gcp_project)
+    token = _fetch_gcp_secret(config.ghcr_token_secret, project=config.gcp_project)
+    return {
+        "SINGULARITY_DOCKER_USERNAME": username,
+        "SINGULARITY_DOCKER_PASSWORD": token,
+        "APPTAINER_DOCKER_USERNAME": username,
+        "APPTAINER_DOCKER_PASSWORD": token,
+    }
+
+
 def _build_image_local(
     report: Optional[LoadReport],
     *,
@@ -358,7 +421,7 @@ def _build_image_local(
     builder_override: Optional[str],
     runtime_override: Optional[str],
     multi_stage_override: Optional[bool],
-    context: Path,
+    context: Optional[Path],
     push: bool,
     renv_lock: Optional[str],
     dockerfile_override: Optional[str] = None,
@@ -380,7 +443,7 @@ def _build_image_local(
         raise RuntimeError("Either dockerfile_override or report must be provided")
 
     image_ref = _image_reference(repository, env_name, tag)
-    context_path = context.resolve()
+    context_path = context.resolve() if context is not None else None
 
     with tempfile.TemporaryDirectory(prefix="absconda-build-") as temp_dir:
         dockerfile_path = Path(temp_dir) / "Dockerfile"
@@ -400,10 +463,15 @@ def _build_image_local(
             requirements_dest = Path(temp_dir) / "requirements.txt"
             shutil.copy2(report.requirements.path, requirements_dest)
 
-        # For tarball/requirements modes, use temp_dir as build context (self-contained)
-        # Otherwise use the specified context directory (for env.yaml and other files)
+        # For tarball/requirements modes, use temp_dir as build context (self-contained).
+        # When --context is given explicitly, use it (for env.yaml and other files).
+        # Otherwise fall back to the self-contained temp_dir: --context is opt-in, so the
+        # current working directory is never used as the build context.
         has_tarball_or_requirements = report is not None and (report.tarball or report.requirements)
-        build_context = temp_dir if has_tarball_or_requirements else str(context_path)
+        if has_tarball_or_requirements or context_path is None:
+            build_context = temp_dir
+        else:
+            build_context = str(context_path)
 
         # Construct docker build command
         docker_cmd = [
@@ -436,7 +504,7 @@ def _build_image_remote(
     builder_override: Optional[str],
     runtime_override: Optional[str],
     multi_stage_override: Optional[bool],
-    context: Path,
+    context: Optional[Path],
     push: bool,
     renv_lock: Optional[str],
     remote_options: RemoteBuildOptions,
@@ -478,18 +546,30 @@ def _build_image_remote(
         definition = remote.load_remote_definition(
             remote_options.builder, config_path=remote_options.config_path
         )
-        remote.build_remote_image(
-            definition=definition,
-            dockerfile=dockerfile,
-            context_path=context,
-            image_ref=image_ref,
-            push=push,
-            wait_seconds=remote_options.wait_seconds,
-            shutdown_after=remote_options.shutdown_after,
-            manifest=manifest,
-            console=err_console,
-            build_args=build_args,
-        )
+        with contextlib.ExitStack() as stack:
+            if context is not None:
+                context_path = context
+            else:
+                # --context is opt-in: when omitted, ship a minimal context (the
+                # Dockerfile and manifest are added by the packager) rather than
+                # tarring up and uploading the current working directory.
+                context_path = Path(
+                    stack.enter_context(
+                        tempfile.TemporaryDirectory(prefix="absconda-remote-ctx-")
+                    )
+                )
+            remote.build_remote_image(
+                definition=definition,
+                dockerfile=dockerfile,
+                context_path=context_path,
+                image_ref=image_ref,
+                push=push,
+                wait_seconds=remote_options.wait_seconds,
+                shutdown_after=remote_options.shutdown_after,
+                manifest=manifest,
+                console=err_console,
+                build_args=build_args,
+            )
     except remote.RemoteConfigError as exc:
         err_console.print(f"[red]Remote config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -760,10 +840,14 @@ def build(
         "--multi-stage/--single-stage",
         help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
     ),
-    context: Path = typer.Option(
-        Path("."),
+    context: Optional[Path] = typer.Option(
+        None,
         "--context",
-        help="Docker build context directory.",
+        help=(
+            "Docker build context directory (opt-in). When omitted, a minimal context "
+            "containing only the generated Dockerfile (plus any tarball/requirements) "
+            "is used, so the current working directory is never sent as build context."
+        ),
     ),
     push: bool = typer.Option(False, "--push", help="Push the image after a successful build."),
     renv_lock: Optional[Path] = typer.Option(
@@ -997,10 +1081,14 @@ def publish(
         "--multi-stage/--single-stage",
         help="Force enabling or disabling multi-stage builds (defaults to policy profile).",
     ),
-    context: Path = typer.Option(
-        Path("."),
+    context: Optional[Path] = typer.Option(
+        None,
         "--context",
-        help="Docker build context directory.",
+        help=(
+            "Docker build context directory (opt-in). When omitted, a minimal context "
+            "containing only the generated Dockerfile (plus any tarball/requirements) "
+            "is used, so the current working directory is never sent as build context."
+        ),
     ),
     renv_lock: Optional[Path] = typer.Option(
         None,
@@ -1357,9 +1445,12 @@ def _deploy_image(
         image_cache.mkdir(parents=True, exist_ok=True)
         sif_path = image_cache / sif_filename
         err_console.print(f"Pulling image to [cyan]{sif_path}[/cyan]...")
+        ghcr_env = _ghcr_pull_env(config)
+        pull_env = {**os.environ, **ghcr_env} if ghcr_env else None
         _run_command_filtered(
             ["singularity", "pull", "--force", str(sif_path), f"docker://{image_ref}"],
             noise_re=_SINGULARITY_NOISE_RE,
+            env=pull_env,
         )
         err_console.print(f"[green]Singularity image pulled to[/green] {sif_path}")
 

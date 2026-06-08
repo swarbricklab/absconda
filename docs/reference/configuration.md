@@ -124,6 +124,38 @@ With `absconda build --file env.yaml --tag v1.0`:
 Built: ghcr.io/myteam/env:v1.0
 ```
 
+### GHCR Authentication
+
+Authenticate local `singularity pull` of **private** GHCR images without exporting
+credentials by hand. This is **opt-in**: omit the `ghcr_auth` block and pulls behave
+as before (unauthenticated). When enabled, the username and token are fetched from
+GCP Secret Manager *at pull time* and passed to Singularity/Apptainer via
+`SINGULARITY_DOCKER_*` / `APPTAINER_DOCKER_*` environment variables scoped to that
+subprocess only — they are never written to disk or shown on the command line.
+
+```yaml
+ghcr_auth:
+  source: gcp-secret-manager            # only supported value; omit to disable
+  user_secret: absconda-github-username # GCP secret holding the GHCR username
+  token_secret: absconda-github-token   # GCP secret holding the GHCR PAT
+```
+
+**Fields** (under `ghcr_auth`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `source` | string | - | Credential source; set to `gcp-secret-manager` to enable |
+| `user_secret` | string | `absconda-github-username` | Secret Manager secret with the GHCR username |
+| `token_secret` | string | `absconda-github-token` | Secret Manager secret with the GHCR PAT |
+
+**Notes**:
+
+- The GCP project is taken from `gcp_project` (or the `GCP_PROJECT` env var).
+- Credentials already present in the environment (e.g. a manual
+  `export SINGULARITY_DOCKER_USERNAME=...`) take precedence and disable the fetch.
+- Only local `singularity pull` is affected; remote builders continue to read their
+  own GHCR secrets (see [Remote Builders](#remote-builders)).
+
 ### GCP Settings
 
 Google Cloud Platform configuration for remote builders.

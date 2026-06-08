@@ -8,6 +8,18 @@
 registry: ghcr.io
 organization: swarbricklab
 
+# GHCR authentication for local `singularity pull` of private images.
+# Opt-in: omit this block to leave pulls unauthenticated (the default).
+# When enabled, the GHCR username/token are fetched from GCP Secret Manager at
+# pull time and passed to singularity via SINGULARITY_DOCKER_*/APPTAINER_DOCKER_*
+# environment variables (scoped to that subprocess only, never written to disk).
+# Credentials already exported in the environment take precedence.
+ghcr_auth:
+  source: gcp-secret-manager            # only supported value; omit to disable
+  user_secret: absconda-github-username # GCP secret holding the GHCR username
+  token_secret: absconda-github-token   # GCP secret holding the GHCR PAT
+  # Project is taken from gcp_project / $GCP_PROJECT above.
+
 # GCP settings (override with GCP_PROJECT, GCP_REGION, GCP_ZONE env vars)
 gcp_project: ctp-archive
 gcp_region: australia-southeast1

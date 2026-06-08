@@ -554,9 +554,7 @@ def _build_image_remote(
                 # Dockerfile and manifest are added by the packager) rather than
                 # tarring up and uploading the current working directory.
                 context_path = Path(
-                    stack.enter_context(
-                        tempfile.TemporaryDirectory(prefix="absconda-remote-ctx-")
-                    )
+                    stack.enter_context(tempfile.TemporaryDirectory(prefix="absconda-remote-ctx-"))
                 )
             remote.build_remote_image(
                 definition=definition,

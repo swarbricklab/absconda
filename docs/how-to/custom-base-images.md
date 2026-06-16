@@ -55,11 +55,58 @@ absconda build \
 - `alpine:3.19` (7MB, minimal)
 - `gcr.io/distroless/base-debian12` (security-focused)
 
-## GPU Base Images
+### Conda-on-base (single stage) — `--base`
 
-### NVIDIA CUDA
+`--builder-base`/`--runtime-base` keep the default two-stage split: the env is
+solved in a micromamba builder, `conda-pack`ed, then copied onto the runtime
+base. That builder has **no CUDA toolkit**, so it can't compile anything against
+system CUDA, and any CUDA you ask for still has to go through conda's solver.
 
-For PyTorch, TensorFlow, JAX with GPU support:
+`--base IMAGE` is a different mode: it builds the conda environment **directly on
+the image you name, in a single stage**. Micromamba is installed into that base,
+then `micromamba create` runs in place. System libraries (CUDA, cuDNN) come from
+the base image instead of the solver — which is exactly what you want on older
+GPUs like NCI's V100s, where resolving `pytorch-cuda`/`cudatoolkit` through conda
+is fragile.
+
+```bash
+absconda build \
+  --file grandqc-env.yaml \
+  --base nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 \
+  --tag grandqc:latest
+```
+
+The trick is to let the base provide CUDA and keep the env file thin — Python
+plus a `pip:` block of CUDA wheels (which bundle their own CUDA runtime):
+
+```yaml
+name: grandqc
+channels: [conda-forge]
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - --extra-index-url https://download.pytorch.org/whl/cu118
+    - torch==2.0.1+cu118        # cu118 wheels include sm_70 (V100)
+    - torchvision==0.15.2+cu118
+    - segmentation-models-pytorch==0.3.1
+```
+
+Notes and limitations:
+
+- `--base` is mutually exclusive with `--builder-base`, `--runtime-base`, and
+  `--multi-stage/--single-stage`, and requires a conda environment file (not
+  `--tarball`/`--requirements`). `--renv-lock` is not yet supported in this mode.
+- The fragment assumes a glibc base with `apt-get` (Debian/Ubuntu, including the
+  `nvidia/cuda` images). For other bases, supply a custom `--template`.
+- Ordered imperative steps from hand-written Dockerfiles (e.g. `PIP_CONSTRAINT`
+  locking, model-weight prefetch, build-time smoke tests) aren't expressed by a
+  single `pip:` block — keep `--dockerfile` for those cases.
+
+### NVIDIA CUDA (runtime-base, multi-stage)
+
+For PyTorch, TensorFlow, JAX with GPU support where conda resolves the stack and
+the wheels are CUDA-self-contained:
 
 ```bash
 absconda build \

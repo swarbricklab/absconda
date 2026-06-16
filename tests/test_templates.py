@@ -55,6 +55,37 @@ def test_render_dockerfile_multi_stage() -> None:
     assert "conda-unpack" in dockerfile
 
 
+def test_render_dockerfile_conda_on_base() -> None:
+    env = make_env()
+    profile = make_profile()
+    config = RenderConfig(
+        env=env,
+        profile=profile,
+        multi_stage=True,  # ignored when base_image is set
+        builder_base=DEFAULT_BUILDER_IMAGE,
+        runtime_base="debian:bookworm-slim",
+        base_image="nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04",
+        template_path=None,
+    )
+
+    dockerfile = render_dockerfile(config)
+
+    # Single stage built directly on the supplied base image.
+    assert "FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04" in dockerfile
+    assert "AS builder" not in dockerfile
+    assert "AS runtime" not in dockerfile
+    # micromamba is installed into the base and the env created in place.
+    assert "micro.mamba.pm/api/micromamba" in dockerfile
+    assert "micromamba create -y -n tmpl-demo" in dockerfile
+    assert "--channel conda-forge" in dockerfile
+    # No conda-pack / cross-stage copy in this mode.
+    assert "conda-pack" not in dockerfile
+    assert "COPY --from=builder" not in dockerfile
+    # Standard export block still applied.
+    assert "ENV CONDA_PREFIX=/opt/conda/envs/tmpl-demo" in dockerfile
+    assert 'CMD ["python"]' in dockerfile
+
+
 def test_render_dockerfile_custom_template(tmp_path: Path) -> None:
     env = make_env()
     profile = make_profile()

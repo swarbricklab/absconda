@@ -424,6 +424,7 @@ def _build_image_local(
     context: Optional[Path],
     push: bool,
     renv_lock: Optional[str],
+    base_override: Optional[str] = None,
     dockerfile_override: Optional[str] = None,
     build_args: Optional[list[str]] = None,
 ) -> str:
@@ -437,6 +438,7 @@ def _build_image_local(
             builder_override=builder_override,
             runtime_override=runtime_override,
             multi_stage_override=multi_stage_override,
+            base_override=base_override,
             renv_lock=renv_lock,
         )
     else:
@@ -508,6 +510,7 @@ def _build_image_remote(
     push: bool,
     renv_lock: Optional[str],
     remote_options: RemoteBuildOptions,
+    base_override: Optional[str] = None,
     dockerfile_override: Optional[str] = None,
     build_args: Optional[list[str]] = None,
 ) -> str:
@@ -521,6 +524,7 @@ def _build_image_remote(
             builder_override=builder_override,
             runtime_override=runtime_override,
             multi_stage_override=multi_stage_override,
+            base_override=base_override,
             renv_lock=renv_lock,
         )
     else:
@@ -604,10 +608,36 @@ def _render_dockerfile(
     builder_override: Optional[str],
     runtime_override: Optional[str],
     multi_stage_override: Optional[bool],
+    base_override: Optional[str] = None,
     renv_lock: Optional[str] = None,
 ) -> str:
     policy_resolution = _active_policy()
     profile = policy_resolution.profile
+
+    # Conda-on-base mode: build the environment directly on a user-supplied base
+    # image (e.g. an nvidia/cuda image). This is a single-stage build that is
+    # mutually exclusive with the builder/runtime split.
+    if base_override is not None:
+        if report.tarball or report.requirements:
+            err_console.print(
+                "[red]Error:[/red] --base requires a conda environment file "
+                "(it cannot be combined with --tarball or --requirements)."
+            )
+            raise typer.Exit(code=1)
+        if builder_override is not None or runtime_override is not None:
+            err_console.print(
+                "[red]Error:[/red] --base cannot be combined with --builder-base or --runtime-base."
+            )
+            raise typer.Exit(code=1)
+        if multi_stage_override is not None:
+            err_console.print(
+                "[red]Error:[/red] --base implies a single-stage build; do not also "
+                "pass --multi-stage/--single-stage."
+            )
+            raise typer.Exit(code=1)
+        if renv_lock is not None:
+            err_console.print("[red]Error:[/red] --base does not yet support --renv-lock.")
+            raise typer.Exit(code=1)
 
     # For requirements mode, use Python base images instead of conda images
     if report.requirements:
@@ -624,6 +654,7 @@ def _render_dockerfile(
 
     config = RenderConfig(
         env=report.env,
+        base_image=base_override,
         tarball_filename="conda-env.tar.gz" if report.tarball else None,
         requirements_filename="requirements.txt" if report.requirements else None,
         env_name=env_name_override if env_name_override is not None else report.env_name,
@@ -691,6 +722,15 @@ def generate(
         "--runtime-base",
         help="Override the runtime stage base image.",
     ),
+    base: Optional[str] = typer.Option(
+        None,
+        "--base",
+        help=(
+            "Build the conda environment directly on this base image in a single "
+            "stage (e.g. an nvidia/cuda image for GPU work). Mutually exclusive "
+            "with --builder-base/--runtime-base."
+        ),
+    ),
     multi_stage: Optional[bool] = typer.Option(
         None,
         "--multi-stage/--single-stage",
@@ -720,6 +760,7 @@ def generate(
         builder_override=builder_base,
         runtime_override=runtime_base,
         multi_stage_override=multi_stage,
+        base_override=base,
         renv_lock=renv_lock_text,
     )
 
@@ -832,6 +873,15 @@ def build(
         None,
         "--runtime-base",
         help="Override the runtime stage base image.",
+    ),
+    base: Optional[str] = typer.Option(
+        None,
+        "--base",
+        help=(
+            "Build the conda environment directly on this base image in a single "
+            "stage (e.g. an nvidia/cuda image for GPU work). Mutually exclusive "
+            "with --builder-base/--runtime-base."
+        ),
     ),
     multi_stage: Optional[bool] = typer.Option(
         None,
@@ -998,6 +1048,7 @@ def build(
             push=push,
             renv_lock=renv_lock_text,
             remote_options=remote_opts,
+            base_override=base,
             build_args=build_arg,
         )
     else:
@@ -1013,6 +1064,7 @@ def build(
             context=context,
             push=push,
             renv_lock=renv_lock_text,
+            base_override=base,
             build_args=build_arg,
         )
 
@@ -1073,6 +1125,15 @@ def publish(
         None,
         "--runtime-base",
         help="Override the runtime stage base image.",
+    ),
+    base: Optional[str] = typer.Option(
+        None,
+        "--base",
+        help=(
+            "Build the conda environment directly on this base image in a single "
+            "stage (e.g. an nvidia/cuda image for GPU work). Mutually exclusive "
+            "with --builder-base/--runtime-base."
+        ),
     ),
     multi_stage: Optional[bool] = typer.Option(
         None,
@@ -1236,6 +1297,7 @@ def publish(
             push=True,
             renv_lock=renv_lock_text,
             remote_options=remote_opts,
+            base_override=base,
             build_args=build_arg,
         )
     else:
@@ -1251,6 +1313,7 @@ def publish(
             context=context,
             push=True,
             renv_lock=renv_lock_text,
+            base_override=base,
             build_args=build_arg,
         )
 
@@ -1269,6 +1332,7 @@ def _publish_and_get_ref(
     template: Optional[Path],
     builder_base: Optional[str],
     runtime_base: Optional[str],
+    base: Optional[str] = None,
     multi_stage: Optional[bool],
     context: Path,
     renv_lock: Optional[Path],
@@ -1376,6 +1440,7 @@ def _publish_and_get_ref(
             push=True,
             renv_lock=renv_lock_text,
             remote_options=remote_opts,
+            base_override=base,
             build_args=build_arg,
         )
     else:
@@ -1391,6 +1456,7 @@ def _publish_and_get_ref(
             context=context,
             push=True,
             renv_lock=renv_lock_text,
+            base_override=base,
             build_args=build_arg,
         )
 
@@ -1678,6 +1744,15 @@ def deploy(
         "--runtime-base",
         help="Override the runtime stage base image.",
     ),
+    base: Optional[str] = typer.Option(
+        None,
+        "--base",
+        help=(
+            "Build the conda environment directly on this base image in a single "
+            "stage (e.g. an nvidia/cuda image for GPU work). Mutually exclusive "
+            "with --builder-base/--runtime-base."
+        ),
+    ),
     multi_stage: Optional[bool] = typer.Option(
         None,
         "--multi-stage/--single-stage",
@@ -1768,6 +1843,7 @@ def deploy(
             template=template,
             builder_base=builder_base,
             runtime_base=runtime_base,
+            base=base,
             multi_stage=multi_stage,
             context=context,
             renv_lock=renv_lock,

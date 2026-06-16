@@ -50,6 +50,19 @@ jobs:
           echo "IMAGE_TAG=$VERSION" >> "$GITHUB_ENV"
           echo "image_tag=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # examples/absconda-env.yaml installs absconda from git@main. That ref is
+      # static, so the remote builder's Docker layer cache (a persistent VM)
+      # reuses a stale `pip install` layer and the image never picks up new
+      # commits. Pin to the exact merged commit so the env content changes each
+      # release: the cache key changes (forcing a fresh install) and the build
+      # is reproducible. Falls back to github.sha for manual workflow_dispatch.
+      - name: Pin absconda source to the merged commit
+        run: |
+          REF="${{ github.event.pull_request.merge_commit_sha || github.sha }}"
+          echo "Pinning absconda source to $REF"
+          sed -i "s|absconda\.git@main|absconda.git@${REF}|" examples/absconda-env.yaml
+          grep 'absconda\.git@' examples/absconda-env.yaml
+
       - name: Publish image via remote builder
         run: |
           absconda publish \

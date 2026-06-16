@@ -203,6 +203,46 @@ def test_generate_single_stage_flag(tmp_path: Path) -> None:
     assert result.stdout.count("FROM") == 1
 
 
+def test_generate_base_image(tmp_path: Path) -> None:
+    env_path = write_env(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "--file",
+            str(env_path),
+            "--base",
+            "nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code == 0
+    assert result.stdout.count("FROM") == 1
+    assert "FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04" in result.stdout
+    assert "micromamba create -y -n cli-demo" in result.stdout
+
+
+def test_generate_base_rejects_builder_base(tmp_path: Path) -> None:
+    env_path = write_env(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "--file",
+            str(env_path),
+            "--base",
+            "nvidia/cuda:11.8.0-runtime-ubuntu22.04",
+            "--builder-base",
+            "mambaorg/micromamba:1.5.5",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code == 1
+    assert "--base cannot be combined with --builder-base" in result.stdout
+
+
 def test_generate_uses_custom_template(tmp_path: Path) -> None:
     env_path = write_env(tmp_path)
     template = tmp_path / "template.j2"

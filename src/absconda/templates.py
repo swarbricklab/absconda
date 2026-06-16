@@ -36,6 +36,7 @@ class RenderConfig:
     builder_base: str
     runtime_base: str
     env: Optional[EnvSpec] = None
+    base_image: Optional[str] = None
     tarball_filename: Optional[str] = None
     requirements_filename: Optional[str] = None
     env_name: Optional[str] = None
@@ -160,6 +161,8 @@ def _build_context(
         "env_dir": env_dir,
         "builder_base": config.builder_base,
         "runtime_base": config.runtime_base,
+        "base_image": config.base_image or "",
+        "conda_on_base": config.base_image is not None,
         "multi_stage": config.multi_stage,
         "export_block": export_block,
         "runtime_command": '["python"]',

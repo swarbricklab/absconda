@@ -6,6 +6,9 @@
 {% elif requirements_mode %}
 {# Requirements mode: pip-based Python environment #}
 {% include "fragments/requirements_runtime.j2" %}
+{% elif conda_on_base %}
+{# Conda-on-base mode: build the env directly on a user-supplied base image #}
+{% include "fragments/conda_on_base.j2" %}
 {% elif multi_stage %}
 {% include "fragments/builder_stage.j2" %}
 

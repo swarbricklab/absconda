@@ -74,6 +74,7 @@ absconda generate [OPTIONS]
 | `--template PATH` | Custom Jinja2 template | Built-in |
 | `--builder-base IMAGE` | Builder stage base image | Policy default |
 | `--runtime-base IMAGE` | Runtime stage base image | Policy default |
+| `--base IMAGE` | Build the conda env directly on this base image in a single stage (e.g. an `nvidia/cuda` image). Mutually exclusive with `--builder-base`/`--runtime-base`. | - |
 | `--multi-stage` / `--single-stage` | Force multi-stage mode | Policy default |
 | `--renv-lock PATH` | R renv.lock file | - |
 | `--snapshot PATH` | Conda snapshot for validation | - |
@@ -175,6 +176,7 @@ absconda build [OPTIONS]
 | `--template PATH` | Custom Jinja2 template | Built-in |
 | `--builder-base IMAGE` | Builder stage base image | Policy default |
 | `--runtime-base IMAGE` | Runtime stage base image | Policy default |
+| `--base IMAGE` | Build the conda env directly on this base image in a single stage (e.g. an `nvidia/cuda` image). Mutually exclusive with `--builder-base`/`--runtime-base`. | - |
 | `--multi-stage` / `--single-stage` | Force multi-stage mode | Policy default |
 | `--context PATH` | Docker build context | `.` |
 | `--push` | Push after building | `false` |
@@ -509,7 +511,7 @@ absconda deploy [IMAGE] [OPTIONS]
 
 **Build Options** (when providing `--file` to build first):
 
-Same as `build`/`publish`: `--file`, `--tarball`, `--requirements`, `--repository`, `--tag`, `--snapshot`, `--template`, `--builder-base`, `--runtime-base`, `--multi-stage/--single-stage`, `--context`, `--renv-lock`, `--remote-builder`, `--remote-config`, `--remote-wait`, `--remote-off`, `--dockerfile`, `--build-arg`, `--env-name`.
+Same as `build`/`publish`: `--file`, `--tarball`, `--requirements`, `--repository`, `--tag`, `--snapshot`, `--template`, `--builder-base`, `--runtime-base`, `--base`, `--multi-stage/--single-stage`, `--context`, `--renv-lock`, `--remote-builder`, `--remote-config`, `--remote-wait`, `--remote-off`, `--dockerfile`, `--build-arg`, `--env-name`.
 
 **Examples**:
 

@@ -1,0 +1,29 @@
+FROM {{ base_image }}
+{% if labels %}
+{% for label in labels %}
+LABEL {{ label }}
+{% endfor %}
+{% endif %}
+
+# Install micromamba into the chosen base image so the conda environment is built
+# directly on top of it. System libraries (e.g. CUDA/cuDNN from an nvidia/cuda
+# base) come from the base image rather than from the solver, which avoids hard
+# CUDA/PyTorch constraint solves and lets build-time pip compilation see the
+# base's toolkit. Assumes a glibc base with apt-get (Debian/Ubuntu, incl. the
+# nvidia/cuda images); for other bases supply a custom --template.
+RUN if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends bzip2 ca-certificates curl && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi && \
+    curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+        | tar -xj -C /usr/local bin/micromamba
+ENV MAMBA_ROOT_PREFIX=/opt/conda
+
+COPY <<'ABSCONDA_ENV' /tmp/env.yaml
+{{ env_yaml }}
+ABSCONDA_ENV
+
+RUN micromamba create -y -n {{ env_name }} {{ channel_flags }} -f /tmp/env.yaml && \
+    micromamba clean -afy && \
+    rm /tmp/env.yaml

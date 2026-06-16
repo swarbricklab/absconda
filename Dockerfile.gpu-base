@@ -1,0 +1,62 @@
+# Dockerfile.gpu-base
+#
+# Reusable CUDA base image for GPU work on NCI's V100 (gpuvolta, sm_70) nodes,
+# published to GHCR with absconda and consumed via `absconda build/publish --base`.
+#
+# WHY a published base (rather than pointing --base straight at nvidia/cuda):
+#   * Stable, org-owned image on ghcr.io/swarbricklab that builds don't have to
+#     re-pull from Docker Hub (no rate limits / anonymous-pull surprises on the
+#     remote builder).
+#   * Common system libraries baked in once, so per-env builds stay thin.
+#   * Pinned, reviewable foundation for every GPU environment.
+#
+# WHY CUDA 11.8 / cuDNN 8:
+#   * cu118 PyTorch wheels include sm_70, i.e. the V100 (gpuvolta) we target.
+#     Those wheels bundle their own CUDA/cuDNN, so at run time the host only needs
+#     the NVIDIA driver (provided to the container by `singularity --nv`).
+#   * 11.8 is the conservative, broadly-compatible choice for this older hardware
+#     and matches the toolchain proven by the GrandQC image.
+#
+# WHY the `runtime` flavour (not `devel`):
+#   * --base builds in a SINGLE stage, so everything in this base ships to the
+#     final image. `runtime` keeps that lean. The bundled-wheel envs we build
+#     today (torch==2.0.1+cu118 etc.) don't compile CUDA from source.
+#   * If an env needs to compile CUDA extensions at build time (nvcc/headers,
+#     e.g. flash-attn or torch-from-source), switch the FROM tag below to
+#     `nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04` and rebuild — nothing else
+#     changes.
+#
+# PUBLISH (no conda env in a base image, so name it explicitly):
+#   module load absconda
+#   absconda publish --dockerfile Dockerfile.gpu-base --env-name gpu-base
+#   # → ghcr.io/swarbricklab/gpu-base:<YYYYMMDD>
+#
+# USE as the base for a GPU environment (CUDA comes from here, not the solver):
+#   absconda publish --file env.yaml --base ghcr.io/swarbricklab/gpu-base:<tag> \
+#       --env-name myenv
+#   # env.yaml stays thin: python + a pip: block of cu118 wheels.
+
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+LABEL org.opencontainers.image.title="gpu-base" \
+      org.opencontainers.image.description="CUDA 11.8 + cuDNN 8 base for V100 GPU work, consumed via absconda --base." \
+      org.opencontainers.image.source="https://github.com/swarbricklab/absconda"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUNBUFFERED=1
+
+# Common system libraries for building and running scientific / vision Python
+# stacks on top of this base:
+#   build-essential, git  - compiling C/C++ extensions and pip git+ installs
+#   ca-certificates, curl - HTTPS fetches (incl. micromamba, added by --base)
+#   libgl1, libglib2.0-0  - runtime deps of opencv-python (cv2)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*

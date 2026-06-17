@@ -32,3 +32,8 @@ output "ssh_command" {
   description = "Command to SSH into the builder via IAP"
   value       = "gcloud compute ssh ${google_compute_instance.builder.name} --zone=${google_compute_instance.builder.zone} --tunnel-through-iap"
 }
+
+output "builder_users" {
+  description = "IAM members granted permission to drive the remote builder"
+  value       = var.builder_users
+}

@@ -60,3 +60,15 @@ variable "github_username" {
   type        = string
   default     = "swarbricklab"
 }
+
+variable "builder_users" {
+  description = <<-EOT
+    IAM members granted permission to use the remote builder (start/stop the VM,
+    SSH/SCP through the IAP tunnel, and run `sudo docker build` via OS Login).
+    Each entry MUST include the member-type prefix, e.g. "group:team@example.com"
+    or "user:alice@example.com". Prefer a Google group so membership is managed
+    in one place. Other teams can override this for their own deployment.
+  EOT
+  type        = list(string)
+  default     = ["group:g_cancer_tumour_progress_group@garvan.org.au"]
+}

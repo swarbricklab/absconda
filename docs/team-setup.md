@@ -7,6 +7,7 @@ This guide is for Swarbrick Lab team members who want to use Absconda with the s
 - Access to the `ctp-archive` GCP project
 - Google Cloud SDK (`gcloud`) installed
 - SSH access configured via OS Login
+- Membership of an IAM group/account that has the [required builder roles](#required-iam-roles)
 
 ## Quick Start
 
@@ -127,13 +128,22 @@ This runs the initial `gcloud compute ssh` command to set up your OS Login user.
 
 ### "Permission denied" errors
 
-Make sure you're authenticated:
+First make sure you're authenticated:
 ```bash
 gcloud auth login
 gcloud config set project ctp-archive
 ```
 
-Check you have the necessary IAM roles in the GCP project.
+If you're authenticated but still get an error like:
+
+```
+ERROR: (gcloud.compute.instances.start) HTTPError 403: Required
+'compute.instances.start' permission for '.../instances/absconda-builder'
+```
+
+then your account is authenticated but **not authorized** — you're missing the
+IAM roles below. Ask a project admin to add you to the builder users group
+(`g_cancer_tumour_progress_group@garvan.org.au` for `ctp-archive`).
 
 ### "Remote build failed"
 
@@ -147,6 +157,46 @@ If it's stuck, you may need to manually stop and restart:
 absconda remote stop gcp-builder
 absconda remote start gcp-builder
 ```
+
+## Required IAM Roles
+
+Absconda drives the remote builder by shelling out to the `gcloud` CLI **under
+your own identity** — it starts/stops the VM and tunnels over IAP to run the
+build. So each user (in addition to authenticating) needs the following roles.
+The builder VM's own service account is a *separate* identity and does **not**
+cover these.
+
+| Role | Granted on | Why |
+|------|-----------|-----|
+| `roles/compute.instanceAdmin.v1` | Project | Start / stop / describe the builder VM |
+| `roles/iap.tunnelResourceAccessor` | Project | SSH & SCP through the IAP tunnel (the VM has no external IP) |
+| `roles/compute.osAdminLogin` | Project | OS Login **with sudo** — the build runs `sudo docker build` |
+| `roles/iam.serviceAccountUser` | Builder service account | Starting an instance with an attached service account requires `iam.serviceAccounts.actAs` |
+
+For `ctp-archive` these are granted to the
+`g_cancer_tumour_progress_group@garvan.org.au` group via Terraform
+([`terraform/gcp/iam.tf`](../terraform/gcp/iam.tf)), so getting access is just a
+matter of being added to that group — no per-user IAM changes needed.
+
+### Other teams / new deployments
+
+These roles are provisioned by the `builder_users` variable in the Terraform
+module ([`terraform/gcp/variables.tf`](../terraform/gcp/variables.tf)). Set it to
+your own group or users (each entry must include the member-type prefix):
+
+```hcl
+# terraform.tfvars
+builder_users = [
+  "group:my-team@example.com",
+  # or individual users:
+  # "user:alice@example.com",
+]
+```
+
+Then `terraform apply`. A project admin can also grant the same roles manually
+with `gcloud projects add-iam-policy-binding` /
+`gcloud iam service-accounts add-iam-policy-binding`, but managing them through
+Terraform keeps access reproducible.
 
 ## Cost Awareness
 
@@ -170,8 +220,9 @@ If you want to use Absconda with your own GCP project:
 
 1. Copy `terraform/gcp/` to your project
 2. Update `terraform/gcp/variables.tf` with your project details
-3. Create your own `.env` file (see `.env.example`)
-4. Run `terraform apply`
-5. Create `~/.config/absconda/config.yaml` with your builder definition
+3. Set `builder_users` to your team's group/users (see [Required IAM Roles](#required-iam-roles))
+4. Create your own `.env` file (see `.env.example`)
+5. Run `terraform apply`
+6. Create `~/.config/absconda/config.yaml` with your builder definition
 
 See the main README for full documentation.

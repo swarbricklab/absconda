@@ -49,6 +49,19 @@ TF_VAR_builder_machine_type=e2-standard-4
 TF_VAR_state_prefix=absconda-remote
 ```
 
+### Builder Users (who can drive the builder)
+
+The `builder_users` variable grants team members the IAM roles needed to
+start/stop the VM and run remote builds (see the
+[Required IAM Roles](../../docs/team-setup.md#required-iam-roles) reference for
+the full list and rationale). It defaults to
+`group:g_cancer_tumour_progress_group@garvan.org.au`. Override it for your own
+deployment via `terraform.tfvars`:
+
+```hcl
+builder_users = ["group:my-team@example.com"]  # each entry needs a member-type prefix
+```
+
 ## Usage
 
 ### Initialize Terraform

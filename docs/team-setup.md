@@ -143,7 +143,7 @@ ERROR: (gcloud.compute.instances.start) HTTPError 403: Required
 
 then your account is authenticated but **not authorized** — you're missing the
 IAM roles below. Ask a project admin to add you to the builder users group
-(`g_cancer_tumour_progress_group@garvan.org.au` for `ctp-archive`).
+(`g_cancer_tumour_progression_group@garvan.org.au` for `ctp-archive`).
 
 ### "Remote build failed"
 
@@ -174,7 +174,7 @@ cover these.
 | `roles/iam.serviceAccountUser` | Builder service account | Starting an instance with an attached service account requires `iam.serviceAccounts.actAs` |
 
 For `ctp-archive` these are granted to the
-`g_cancer_tumour_progress_group@garvan.org.au` group via Terraform
+`g_cancer_tumour_progression_group@garvan.org.au` group via Terraform
 ([`terraform/gcp/iam.tf`](../terraform/gcp/iam.tf)), so getting access is just a
 matter of being added to that group — no per-user IAM changes needed.
 

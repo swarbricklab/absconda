@@ -70,5 +70,5 @@ variable "builder_users" {
     in one place. Other teams can override this for their own deployment.
   EOT
   type        = list(string)
-  default     = ["group:g_cancer_tumour_progress_group@garvan.org.au"]
+  default     = ["group:g_cancer_tumour_progression_group@garvan.org.au"]
 }

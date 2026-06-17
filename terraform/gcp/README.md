@@ -55,7 +55,7 @@ The `builder_users` variable grants team members the IAM roles needed to
 start/stop the VM and run remote builds (see the
 [Required IAM Roles](../../docs/team-setup.md#required-iam-roles) reference for
 the full list and rationale). It defaults to
-`group:g_cancer_tumour_progress_group@garvan.org.au`. Override it for your own
+`group:g_cancer_tumour_progression_group@garvan.org.au`. Override it for your own
 deployment via `terraform.tfvars`:
 
 ```hcl

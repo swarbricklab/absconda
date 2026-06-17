@@ -542,6 +542,7 @@ def _build_image_remote(
         "policy_profile": policy_resolution.profile.name,
         "channels": report.env.channels if report is not None and report.env else [],
         "remote_builder": remote_options.builder,
+        "base_image": base_override,
         "push": push,
         "tarball_mode": report.tarball is not None if report else False,
         "requirements_mode": report.requirements is not None if report else False,
@@ -572,6 +573,7 @@ def _build_image_remote(
                 manifest=manifest,
                 console=err_console,
                 build_args=build_args,
+                base_image=base_override,
             )
     except remote.RemoteConfigError as exc:
         err_console.print(f"[red]Remote config error:[/red] {exc}")

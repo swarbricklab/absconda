@@ -98,6 +98,58 @@ def test_build_remote_image_invokes_expected_commands(monkeypatch, tmp_path: Pat
     assert any("rm -rf" in cmd for cmd in joined)
 
 
+def test_build_authenticates_private_base_before_build(monkeypatch, tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    (context_dir / "example.txt").write_text("hello")
+
+    definition = remote.RemoteBuilderDefinition(
+        name="default-remote",
+        ssh_target="absconda@builder.example.com",
+        workspace="/home/absconda/builds",
+        ssh_port=22,
+        ssh_key=None,
+        ssh_options=[],
+        start_command=None,
+        stop_command=None,
+        lock_file=tmp_path / "builder.lock",
+    )
+
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(remote, "_run_subprocess", lambda command, **_: recorded.append(command))
+
+    remote.build_remote_image(
+        definition=definition,
+        dockerfile="FROM ghcr.io/swarbricklab/gpu-base:20260616",
+        context_path=context_dir,
+        image_ref="ghcr.io/swarbricklab/flash-scope:20260617",
+        push=False,
+        wait_seconds=5,
+        shutdown_after=False,
+        manifest={"example": True},
+        console=Console(file=io.StringIO()),
+        base_image="ghcr.io/swarbricklab/gpu-base:20260616",
+    )
+
+    # The build is a single SSH invocation; the GHCR login must come before
+    # `docker build` so the private base image (FROM) can be pulled.
+    build_cmd = next(" ".join(c) for c in recorded if "docker build" in " ".join(c))
+    assert "docker login ghcr.io" in build_cmd
+    assert build_cmd.index("docker login ghcr.io") < build_cmd.index("docker build")
+    # No push requested, so no push happens, but credentials are still cleaned up.
+    assert "docker push" not in build_cmd
+    assert "docker logout ghcr.io" in build_cmd
+
+
+def test_ghcr_registry_only_matches_ghcr() -> None:
+    assert remote._ghcr_registry("ghcr.io/org/img:tag") == "ghcr.io"
+    # Public/other registries and registry-less refs are left untouched.
+    assert remote._ghcr_registry("nvidia/cuda:12.2.0-base") is None
+    assert remote._ghcr_registry("python:3.11-slim") is None
+    assert remote._ghcr_registry("quay.io/org/img:tag") is None
+    assert remote._ghcr_registry(None) is None
+
+
 def test_list_remote_builders_returns_names(tmp_path: Path) -> None:
     config_path = tmp_path / "absconda-remote.yaml"
     _write_remote_config(config_path)

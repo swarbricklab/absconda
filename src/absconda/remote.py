@@ -210,6 +210,7 @@ def build_remote_image(
     manifest: Dict[str, Any],
     console: Console,
     build_args: Optional[List[str]] = None,
+    base_image: Optional[str] = None,
 ) -> None:
     """Send a Docker context to the remote builder and run docker build there."""
 
@@ -225,7 +226,9 @@ def build_remote_image(
 
         session = _RemoteSession(definition, console)
         try:
-            session.execute_build(dockerfile, context_path, image_ref, push, manifest, build_args)
+            session.execute_build(
+                dockerfile, context_path, image_ref, push, manifest, build_args, base_image
+            )
         finally:
             session.cleanup_local()
 
@@ -504,6 +507,7 @@ class _RemoteSession:
         push: bool,
         manifest: Dict[str, Any],
         build_args: Optional[List[str]] = None,
+        base_image: Optional[str] = None,
     ) -> None:
         self.console.print("Packaging Docker context for remote transfer...")
         self._tarball_path = _create_context_tarball(context_path, dockerfile, manifest)
@@ -511,7 +515,7 @@ class _RemoteSession:
         self._upload_tarball()
         try:
             self._extract_context()
-            self._run_build(image_ref, push, build_args)
+            self._run_build(image_ref, push, build_args, base_image)
         finally:
             self._cleanup_remote()
             # Auto-stop the builder after build completes
@@ -560,49 +564,64 @@ class _RemoteSession:
         _run_subprocess(cmd)
 
     def _run_build(
-        self, image_ref: str, push: bool, build_args: Optional[List[str]] = None
+        self,
+        image_ref: str,
+        push: bool,
+        build_args: Optional[List[str]] = None,
+        base_image: Optional[str] = None,
     ) -> None:
         # Construct build args string
         build_args_str = ""
         if build_args:
             build_args_str = " ".join(f"--build-arg {shlex.quote(arg)}" for arg in build_args) + " "
 
+        token_secret = self.definition.ghcr_token_secret
+        user_secret = self.definition.ghcr_user_secret
+
+        # Registries we need to authenticate to with the configured GHCR
+        # credentials, in order. The base image is pulled during `docker build`
+        # (the FROM step), so a private base must be authenticated *before* the
+        # build runs — otherwise BuildKit falls back to an anonymous pull and
+        # the registry returns 401/403. The push target is authenticated too
+        # (it is usually the same registry, so it gets de-duplicated here).
+        registries: List[str] = []
+        base_registry = _ghcr_registry(base_image)
+        if base_registry is not None:
+            registries.append(base_registry)
+        if push:
+            push_registry = _ghcr_registry(image_ref)
+            if push_registry is not None and push_registry not in registries:
+                registries.append(push_registry)
+
         commands = [
             "set -euo pipefail",
             f"cd {shlex.quote(self.remote_dir)}",
-            # Build the image with BuildKit (sudo for OS Login users not in docker group)
-            f"DOCKER_BUILDKIT=1 sudo docker build {build_args_str}-t {shlex.quote(image_ref)} .",
         ]
-
-        # Push if requested
+        # Authenticate before the build so private base images can be pulled.
+        commands.extend(_docker_login_command(reg, token_secret, user_secret) for reg in registries)
+        # Build the image with BuildKit (sudo for OS Login users not in docker group)
+        commands.append(
+            f"DOCKER_BUILDKIT=1 sudo docker build {build_args_str}-t {shlex.quote(image_ref)} ."
+        )
         if push:
-            # Authenticate with container registry using Secret Manager credentials
-            # Extract registry from image_ref (e.g., ghcr.io from ghcr.io/org/image:tag)
-            registry = image_ref.split("/")[0]
-            token_secret = self.definition.ghcr_token_secret
-            user_secret = self.definition.ghcr_user_secret
-            commands.append(
-                f"gcloud secrets versions access latest --secret={shlex.quote(token_secret)} | "
-                f"sudo docker login {shlex.quote(registry)} "
-                f"-u $(gcloud secrets versions access latest --secret={shlex.quote(user_secret)}) "
-                "--password-stdin"
-            )
             commands.append(f"sudo docker push {shlex.quote(image_ref)}")
-            # Clean up credentials after push to avoid storing them on disk
-            commands.append(f"sudo docker logout {shlex.quote(registry)}")
+        # Clean up credentials so they are not left on the shared builder.
+        commands.extend(f"sudo docker logout {shlex.quote(reg)}" for reg in registries)
 
         cmd = _remote_shell_command(self.definition, " && ".join(commands))
         try:
             _run_subprocess(cmd)
         except RemoteError as exc:
-            if push:
-                # Provide more helpful context for auth failures
-                token_secret = self.definition.ghcr_token_secret
+            if registries:
+                # Provide more helpful context for auth failures (base-image pull
+                # or push). A failed FROM pull surfaces as a 401/"anonymous token"
+                # error; a failed push surfaces as 'denied: denied'.
                 raise RemoteError(
                     f"{exc}\n\n"
-                    "If authentication failed ('denied: denied'), check that:\n"
+                    "If authentication failed (401 / 'denied: denied'), check that:\n"
                     f"  1. Secret '{token_secret}' contains a valid GitHub PAT\n"
-                    "  2. The token has 'write:packages' scope for pushing\n"
+                    "  2. The token has 'read:packages' (to pull a private base "
+                    "image) and 'write:packages' (to push)\n"
                     "  3. The token hasn't expired\n"
                     "Update the secret with:\n"
                     f"  echo 'TOKEN' | gcloud secrets versions add "
@@ -630,6 +649,36 @@ class _RemoteSession:
 # ---------------------------------------------------------------------------
 # Command helpers
 # ---------------------------------------------------------------------------
+
+# Registry the configured GHCR credentials authenticate against.
+GHCR_REGISTRY = "ghcr.io"
+
+
+def _ghcr_registry(image_ref: Optional[str]) -> Optional[str]:
+    """Return the registry host of an image ref iff it is GHCR, else None.
+
+    The builder is configured with GHCR credentials only, so we authenticate
+    exactly those images hosted on ``ghcr.io``. Images without an explicit
+    registry (e.g. ``python:3.11-slim``, ``mambaorg/micromamba``) or on other
+    registries (e.g. a public ``nvidia/cuda`` base) are left untouched so we
+    never break a build that needs no auth.
+    """
+
+    if not image_ref:
+        return None
+    first = image_ref.split("/", 1)[0]
+    return GHCR_REGISTRY if first == GHCR_REGISTRY else None
+
+
+def _docker_login_command(registry: str, token_secret: str, user_secret: str) -> str:
+    """Build a `docker login` command that pulls credentials from Secret Manager."""
+
+    return (
+        f"gcloud secrets versions access latest --secret={shlex.quote(token_secret)} | "
+        f"sudo docker login {shlex.quote(registry)} "
+        f"-u $(gcloud secrets versions access latest --secret={shlex.quote(user_secret)}) "
+        "--password-stdin"
+    )
 
 
 def _remote_shell_command(

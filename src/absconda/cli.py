@@ -33,6 +33,7 @@ from .environment import (
     load_requirements,
     load_tarball,
 )
+from .gpu_lint import gpu_warnings
 from .policy import PolicyLoadError, PolicyResolution, load_policy
 from .templates import (
     DEFAULT_BUILDER_IMAGE,
@@ -652,6 +653,11 @@ def _render_dockerfile(
     multi_stage_default = profile.multi_stage if profile.multi_stage is not None else True
     multi_stage = multi_stage_override if multi_stage_override is not None else multi_stage_default
 
+    # Surface common GPU-build pitfalls before kicking off a (possibly long,
+    # possibly remote) build. Static checks only; they warn, never block.
+    if report.env is not None:
+        _print_warning_messages(gpu_warnings(report.env, base_image=base_override))
+
     config = RenderConfig(
         env=report.env,
         base_image=base_override,
@@ -810,6 +816,8 @@ def validate(
 
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _enforce_policy_constraints(report)
+    if report.env is not None:
+        _print_warning_messages(gpu_warnings(report.env))
 
     if report.tarball:
         err_console.print(f"Tarball [green]{report.env_name}[/green] is valid.")

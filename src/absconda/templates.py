@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -61,12 +62,18 @@ def render_dockerfile(config: RenderConfig) -> str:
     export_block = _build_export_block(env_dir, env_name)
 
     # Handle tarball and requirements modes differently
+    pip_requirements: Optional[str] = None
     if config.tarball_filename or config.requirements_filename:
         env_yaml = ""  # No env.yaml in tarball or requirements mode
+        conda_env_yaml = ""
     elif config.env:
         env_yaml = _env_yaml(config.env)
+        # Split pip deps out of the conda solve so they are installed in a
+        # second, constrained step (see _split_conda_pip).
+        conda_env_yaml, pip_requirements = _split_conda_pip(config.env)
     else:
         env_yaml = ""
+        conda_env_yaml = ""
 
     context = _build_context(
         config,
@@ -74,6 +81,8 @@ def render_dockerfile(config: RenderConfig) -> str:
         env_dir=env_dir,
         export_block=export_block,
         env_yaml=env_yaml,
+        conda_env_yaml=conda_env_yaml,
+        pip_requirements=pip_requirements,
         env_name=env_name,
     )
 
@@ -124,6 +133,67 @@ def _env_yaml(env: EnvSpec) -> str:
     return yaml.safe_dump(data, sort_keys=False).strip()
 
 
+def _dep_name(spec: str) -> str:
+    """Best-effort package name from a conda dependency spec.
+
+    Handles channel prefixes ('conda-forge::numpy') and version specifiers
+    ('numpy>=1.24', 'python=3.12'). Used only to detect whether 'pip' is
+    already present in the conda dependencies.
+    """
+
+    without_channel = spec.split("::")[-1]
+    return re.split(r"[\s=<>!~\[\(]", without_channel, maxsplit=1)[0].strip().lower()
+
+
+def _split_conda_pip(env: EnvSpec) -> Tuple[str, Optional[str]]:
+    """Split an env into a conda-only YAML and a pip requirements block.
+
+    pip dependencies are pulled out of the env file so they are NOT installed by
+    the conda solver's implicit `pip install`, which has no knowledge of conda's
+    version pins and will happily upgrade a conda-installed package past them.
+    They are installed instead in a second step constrained to the versions
+    conda resolved (see the install fragments), so a conflict fails the build
+    rather than silently clobbering a pin.
+
+    Returns ``(conda_only_yaml, pip_requirements_text)`` where the second item is
+    ``None`` when the environment has no pip section.
+    """
+
+    raw = (
+        dict(env.raw)
+        if env.raw
+        else {
+            "name": env.name,
+            "channels": list(env.channels),
+            "dependencies": list(env.dependencies),
+        }
+    )
+    dependencies = raw.get("dependencies") or []
+
+    conda_deps: list[Any] = []
+    pip_deps: list[str] = []
+    for dep in dependencies:
+        if isinstance(dep, dict) and "pip" in dep:
+            pip_list = dep.get("pip") or []
+            pip_deps.extend(str(item) for item in pip_list)
+        else:
+            conda_deps.append(dep)
+
+    if not pip_deps:
+        # No pip section: conda owns the whole environment, nothing to split.
+        return _env_yaml(env), None
+
+    # Ensure pip is available in the conda env so the second phase can run.
+    conda_names = {_dep_name(dep) for dep in conda_deps if isinstance(dep, str)}
+    if "pip" not in conda_names:
+        conda_deps.append("pip")
+
+    conda_raw = dict(raw)
+    conda_raw["dependencies"] = conda_deps
+    conda_yaml = yaml.safe_dump(conda_raw, sort_keys=False).strip()
+    return conda_yaml, "\n".join(pip_deps)
+
+
 def _join_path(prefix: str, name: str) -> str:
     return str(PurePosixPath(prefix) / name)
 
@@ -150,12 +220,17 @@ def _build_context(
     env_dir: str,
     export_block: list[str],
     env_yaml: str,
+    conda_env_yaml: str,
+    pip_requirements: Optional[str],
     env_name: str,
 ) -> Dict[str, Any]:
     return {
         "env": config.env,
         "env_name": env_name,
         "env_yaml": env_yaml,
+        "conda_env_yaml": conda_env_yaml,
+        "pip_requirements": pip_requirements or "",
+        "has_pip": bool(pip_requirements),
         "channel_flags": _channel_flags(config.env.channels) if config.env else "",
         "env_prefix": env_prefix,
         "env_dir": env_dir,

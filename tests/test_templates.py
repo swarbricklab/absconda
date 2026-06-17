@@ -2,7 +2,12 @@ from pathlib import Path
 
 from absconda.environment import EnvSpec
 from absconda.policy import PolicyProfile
-from absconda.templates import DEFAULT_BUILDER_IMAGE, RenderConfig, render_dockerfile
+from absconda.templates import (
+    DEFAULT_BUILDER_IMAGE,
+    RenderConfig,
+    _split_conda_pip,
+    render_dockerfile,
+)
 
 
 def make_env() -> EnvSpec:
@@ -15,6 +20,29 @@ def make_env() -> EnvSpec:
             "channels": ["conda-forge"],
             "dependencies": ["python=3.11"],
         },
+    )
+
+
+def make_pip_env() -> EnvSpec:
+    raw = {
+        "name": "with-pip",
+        "channels": ["conda-forge"],
+        "dependencies": [
+            "python=3.12",
+            "numpy>=1.24",
+            {"pip": ["--extra-index-url https://example/whl", "torch==2.7.1"]},
+        ],
+    }
+    return EnvSpec(
+        name="with-pip",
+        channels=["conda-forge"],
+        dependencies=[
+            "python=3.12",
+            "numpy>=1.24",
+            "pip::--extra-index-url https://example/whl",
+            "pip::torch==2.7.1",
+        ],
+        raw=raw,
     )
 
 
@@ -105,6 +133,80 @@ def test_render_dockerfile_custom_template(tmp_path: Path) -> None:
 
     assert "FROM override" in dockerfile
     assert "RUN echo 'tmpl-demo'" in dockerfile
+
+
+def test_split_conda_pip_separates_and_adds_pip() -> None:
+    conda_yaml, pip_reqs = _split_conda_pip(make_pip_env())
+
+    # pip section is removed from the conda YAML...
+    assert "torch" not in conda_yaml
+    assert "extra-index-url" not in conda_yaml
+    # ...and `pip` is injected so the second phase can run.
+    assert "- pip" in conda_yaml
+    # pip requirements preserve option lines and order.
+    assert pip_reqs is not None
+    assert pip_reqs.splitlines() == [
+        "--extra-index-url https://example/whl",
+        "torch==2.7.1",
+    ]
+
+
+def test_split_conda_pip_no_pip_section() -> None:
+    conda_yaml, pip_reqs = _split_conda_pip(make_env())
+    assert pip_reqs is None
+    assert "- pip" not in conda_yaml  # pip not injected when there is no pip section
+
+
+def test_split_conda_pip_does_not_duplicate_existing_pip() -> None:
+    raw = {
+        "name": "e",
+        "channels": ["conda-forge"],
+        "dependencies": ["python=3.12", "pip", {"pip": ["torch"]}],
+    }
+    env = EnvSpec(
+        name="e", channels=["conda-forge"], dependencies=["python=3.12", "pip::torch"], raw=raw
+    )
+    conda_yaml, _ = _split_conda_pip(env)
+    assert conda_yaml.count("- pip\n") + conda_yaml.count("- pip") == 1
+
+
+def test_render_installs_pip_constrained_after_conda() -> None:
+    dockerfile = render_dockerfile(
+        RenderConfig(
+            env=make_pip_env(),
+            profile=make_profile(),
+            multi_stage=False,
+            builder_base=DEFAULT_BUILDER_IMAGE,
+            runtime_base="debian:bookworm-slim",
+            base_image="nvidia/cuda:11.8.0-base-ubuntu22.04",
+        )
+    )
+
+    # pip deps land in their own requirements file, not the conda env.yaml.
+    assert "ABSCONDA_PIP" in dockerfile
+    # Constraints are frozen from the solved conda env and passed to pip.
+    assert "pip list --format=freeze > /tmp/conda.constraints.txt" in dockerfile
+    assert "--constraint /tmp/conda.constraints.txt" in dockerfile
+    assert "--requirement /tmp/requirements.txt" in dockerfile
+    # Verify the env is internally consistent afterwards.
+    assert "python -m pip check" in dockerfile
+    # Ordering: conda create precedes the pip install.
+    assert dockerfile.index("micromamba create") < dockerfile.index("pip install")
+
+
+def test_render_no_pip_section_omits_pip_steps() -> None:
+    dockerfile = render_dockerfile(
+        RenderConfig(
+            env=make_env(),
+            profile=make_profile(),
+            multi_stage=True,
+            builder_base=DEFAULT_BUILDER_IMAGE,
+            runtime_base="debian:bookworm-slim",
+        )
+    )
+    assert "requirements.txt" not in dockerfile
+    assert "pip install" not in dockerfile
+    assert "pip check" not in dockerfile
 
 
 def test_render_dockerfile_with_renv_lock() -> None:

@@ -21,9 +21,23 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
 ENV MAMBA_ROOT_PREFIX=/opt/conda
 
 COPY <<'ABSCONDA_ENV' /tmp/env.yaml
-{{ env_yaml }}
+{{ conda_env_yaml }}
 ABSCONDA_ENV
+{% if has_pip %}
+COPY <<'ABSCONDA_PIP' /tmp/requirements.txt
+{{ pip_requirements }}
+ABSCONDA_PIP
+{% endif %}
 
+# Install conda packages first, then pip packages constrained to the versions
+# conda resolved (pip otherwise ignores conda's pins and may upgrade past them).
+# pip fails on a conflict instead of silently clobbering a pinned package.
 RUN micromamba create -y -n {{ env_name }} {{ channel_flags }} -f /tmp/env.yaml && \
+{% if has_pip %}
+    micromamba run -n {{ env_name }} python -m pip list --format=freeze > /tmp/conda.constraints.txt && \
+    micromamba run -n {{ env_name }} python -m pip install --no-cache-dir \
+        --constraint /tmp/conda.constraints.txt --requirement /tmp/requirements.txt && \
+    micromamba run -n {{ env_name }} python -m pip check && \
+{% endif %}
     micromamba clean -afy && \
-    rm /tmp/env.yaml
+    rm -f /tmp/env.yaml{% if has_pip %} /tmp/requirements.txt /tmp/conda.constraints.txt{% endif %}

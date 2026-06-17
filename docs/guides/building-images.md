@@ -65,6 +65,26 @@ When `--dockerfile` is used without `--file`, the environment name is auto-detec
 absconda build --file environment.yaml --repository myimage
 ```
 
+#### Conda + pip dependencies
+
+When an `environment.yaml` mixes conda dependencies with a `pip:` section,
+absconda installs them in two phases:
+
+1. conda solves and installs the conda dependencies (honouring their pins);
+2. the `pip:` packages are installed **constrained to the versions conda just
+   resolved**, so pip cannot silently upgrade a conda-managed package (e.g.
+   `numpy`) past its conda pin.
+
+If a pip package genuinely requires a version that conflicts with a conda pin,
+**the build fails** with a pip resolution error rather than producing an
+environment that violates the pins. Resolve it by relaxing the conda pin or
+pinning the pip package to a compatible version. A `pip check` runs afterwards
+to confirm the final environment has a consistent dependency tree.
+
+> Note: this coordination applies to conda + pip. Mixing conda-installed R
+> packages with `renv` is not yet guarded — keep R packages managed by a single
+> tool for now.
+
 ### From pip Requirements
 
 ```bash

@@ -103,6 +103,33 @@ Notes and limitations:
   locking, model-weight prefetch, build-time smoke tests) aren't expressed by a
   single `pip:` block — keep `--dockerfile` for those cases.
 
+### GPU env guardrails
+
+A valid GPU build is a three-way intersection: **(python tag `cpXX`) × (framework
+version) × (CUDA variant `cuXXX`)**. Pin only two and the build is at the mercy of
+resolver defaults — most dangerously a floating `python`, because binary wheels
+(torch, jax, cupy, tensorflow) lag new Python releases, so "newest python" is
+often the one combination with no wheel and the build fails deep in the pip layer.
+
+`absconda generate`/`build`/`publish`/`validate` emit warnings (they never block)
+for the common pitfalls:
+
+- **Floating `python` + a pinned CUDA wheel** — pin the interpreter, e.g.
+  `python=3.12`.
+- **A bare `torch` (etc.) alongside a CUDA `--extra-index-url`** — pip may resolve
+  the CPU wheel from PyPI (a build that "succeeds" but where
+  `torch.cuda.is_available()` is `False`). Pin the explicit local version,
+  `torch==<ver>+cu118`, which only exists on the CUDA index.
+- **CUDA resolved by conda** (`pytorch-cuda`/`cudatoolkit`/`cuda-*`) — fragile, and
+  redundant when building on a CUDA `--base` (CUDA already comes from the base).
+- **Conda `pytorch` without `pytorch-cuda`/`cudatoolkit`** — the conda `pytorch`
+  channel is **not** GPU; this yields a CPU-only build. Add the CUDA metapackage
+  (and the `nvidia` channel) or install torch from a pip CUDA wheel.
+
+The recommended GPU recipe is a thin env on a CUDA `--base`: conda for the
+lightweight scientific stack, a pinned interpreter, and a pip `+cuXXX` wheel for
+the framework.
+
 ### NVIDIA CUDA (runtime-base, multi-stage)
 
 For PyTorch, TensorFlow, JAX with GPU support where conda resolves the stack and

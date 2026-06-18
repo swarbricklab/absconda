@@ -209,6 +209,33 @@ def test_render_no_pip_section_omits_pip_steps() -> None:
     assert "pip check" not in dockerfile
 
 
+def test_variables_section_rendered_as_env_not_fed_to_conda() -> None:
+    raw = {
+        "name": "v",
+        "channels": ["conda-forge"],
+        "dependencies": ["python=3.12"],
+        "variables": {"CLOUDSDK_PYTHON_SITEPACKAGES": "1", "FOO": "a b"},
+    }
+    env = EnvSpec(name="v", channels=["conda-forge"], dependencies=["python=3.12"], raw=raw)
+    dockerfile = render_dockerfile(
+        RenderConfig(
+            env=env,
+            profile=make_profile(),
+            multi_stage=True,
+            builder_base=DEFAULT_BUILDER_IMAGE,
+            runtime_base="debian:bookworm-slim",
+        )
+    )
+
+    # variables become image ENV (quoted so values with spaces survive).
+    assert 'ENV CLOUDSDK_PYTHON_SITEPACKAGES="1"' in dockerfile
+    assert 'ENV FOO="a b"' in dockerfile
+    # ...and are NOT written into the conda env.yaml the solver reads.
+    conda_block = dockerfile.split("ABSCONDA_ENV")[1]
+    assert "variables" not in conda_block
+    assert "CLOUDSDK_PYTHON_SITEPACKAGES" not in conda_block
+
+
 def test_render_dockerfile_with_renv_lock() -> None:
     env = make_env()
     profile = make_profile()

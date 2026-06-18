@@ -85,6 +85,23 @@ to confirm the final environment has a consistent dependency tree.
 > packages with `renv` is not yet guarded — keep R packages managed by a single
 > tool for now.
 
+#### Environment variables in the image
+
+A conda-style `variables:` section in the environment file is baked into the
+image as `ENV` lines:
+
+```yaml
+name: myenv
+dependencies:
+  - python=3.12
+variables:
+  CLOUDSDK_PYTHON_SITEPACKAGES: "1"
+```
+
+The image runs binaries directly (it never `conda activate`s), so this is how
+runtime environment variables are made to stick. The `variables:` section is not
+passed to the conda solver.
+
 ### From pip Requirements
 
 ```bash

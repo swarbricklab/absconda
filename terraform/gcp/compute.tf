@@ -93,9 +93,13 @@ DOCKEREOF
     # Login to GHCR (credentials stored in /root/.docker/config.json)
     echo "$${GITHUB_TOKEN}" | docker login ghcr.io -u "$${GITHUB_USERNAME}" --password-stdin
     
-    # Create working directory (ownership will be set by provisioner after OS Login)
+    # Shared build workspace. Every team member connects as their own OS Login
+    # user, so this must be writable by all of them. Use sticky + world-writable
+    # (1777, like /tmp): anyone can create their per-build dir, but cannot delete
+    # another user's. Re-applied on every boot so it never drifts back to a
+    # single-owner directory.
     mkdir -p /var/lib/absconda
-    chmod 755 /var/lib/absconda
+    chmod 1777 /var/lib/absconda
     
     echo "Absconda builder Docker setup complete"
     echo "OS Login user configuration will be handled by Terraform provisioner"
@@ -137,14 +141,17 @@ DOCKEREOF
         --command="while [ ! -f /var/lib/absconda/ready ]; do echo 'Waiting for startup script...'; sleep 5; done; echo 'Startup script complete.'" || \
         { echo "Warning: Startup script check failed."; exit 1; }
       
-      # Now configure permissions for the OS Login user
-      echo "Configuring permissions for OS Login user..."
+      # Add the first OS Login user to the docker group for convenience. The
+      # build workspace itself is shared (1777, set in the startup script), so it
+      # must NOT be chown'd to a single user — that would lock out every other
+      # team member's scp upload.
+      echo "Configuring docker group access for OS Login user..."
       gcloud compute ssh ${self.name} \
         --zone=${self.zone} \
         --tunnel-through-iap \
         --project=${var.project} \
-        --command="sudo chown \$(whoami):\$(whoami) /var/lib/absconda && sudo usermod -aG docker \$(whoami) && echo 'Permissions configured for '\$(whoami)" || \
-        echo "Warning: Permission configuration failed."
+        --command="sudo usermod -aG docker \$(whoami) && echo 'docker group configured for '\$(whoami)" || \
+        echo "Warning: docker group configuration failed."
       
       echo "Absconda builder provisioning complete."
     EOT

@@ -59,7 +59,8 @@ def render_dockerfile(config: RenderConfig) -> str:
 
     env_prefix = config.profile.env_prefix or "/opt/conda/envs"
     env_dir = _join_path(env_prefix, env_name)
-    export_block = _build_export_block(env_dir, env_name)
+    env_variables = config.env.raw.get("variables") if config.env and config.env.raw else None
+    export_block = _build_export_block(env_dir, env_name, env_variables)
 
     # Handle tarball and requirements modes differently
     pip_requirements: Optional[str] = None
@@ -179,31 +180,45 @@ def _split_conda_pip(env: EnvSpec) -> Tuple[str, Optional[str]]:
         else:
             conda_deps.append(dep)
 
+    # `variables:` is realized as image ENV (see _build_export_block), not fed to
+    # the conda solver, so drop it from the conda env file.
+    conda_raw = {key: value for key, value in raw.items() if key != "variables"}
+
     if not pip_deps:
         # No pip section: conda owns the whole environment, nothing to split.
-        return _env_yaml(env), None
+        conda_raw["dependencies"] = conda_deps
+        return yaml.safe_dump(conda_raw, sort_keys=False).strip(), None
 
     # Ensure pip is available in the conda env so the second phase can run.
     conda_names = {_dep_name(dep) for dep in conda_deps if isinstance(dep, str)}
     if "pip" not in conda_names:
         conda_deps.append("pip")
 
-    conda_raw = dict(raw)
     conda_raw["dependencies"] = conda_deps
-    conda_yaml = yaml.safe_dump(conda_raw, sort_keys=False).strip()
-    return conda_yaml, "\n".join(pip_deps)
+    return yaml.safe_dump(conda_raw, sort_keys=False).strip(), "\n".join(pip_deps)
 
 
 def _join_path(prefix: str, name: str) -> str:
     return str(PurePosixPath(prefix) / name)
 
 
-def _build_export_block(env_dir: str, env_name: str) -> list[str]:
-    return [
+def _build_export_block(env_dir: str, env_name: str, variables: Any = None) -> list[str]:
+    lines = [
         f"ENV CONDA_DEFAULT_ENV={env_name}",
         f"ENV CONDA_PREFIX={env_dir}",
         f"ENV PATH={env_dir}/bin:/opt/conda/bin:${{PATH}}",
     ]
+    # Render a conda `variables:` section into image ENV lines. The image runs
+    # binaries directly (no `conda activate`), so conda's own variable handling
+    # never fires; baking them as ENV is what makes them visible at runtime.
+    lines.extend(_env_var_lines(variables))
+    return lines
+
+
+def _env_var_lines(variables: Any) -> list[str]:
+    if not isinstance(variables, dict):
+        return []
+    return [f"ENV {key}={json.dumps(str(value))}" for key, value in variables.items()]
 
 
 def _needs_git(env: Optional[EnvSpec]) -> bool:

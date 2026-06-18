@@ -17,3 +17,10 @@ dependencies:
   - pip:
     # Install from GitHub main branch to get latest code
     - git+https://github.com/swarbricklab/absconda.git@main
+
+# Baked into the image as ENV. gcloud runs its Python with -S and so ignores the
+# numpy installed above (which speeds up IAP tunnels) unless site-packages are
+# enabled. Setting this silences the "consider installing NumPy" warning on every
+# remote-builder connection.
+variables:
+  CLOUDSDK_PYTHON_SITEPACKAGES: "1"

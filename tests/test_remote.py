@@ -205,6 +205,76 @@ def test_start_remote_builder_requires_command(tmp_path: Path) -> None:
         remote.start_remote_builder(definition, console)
 
 
+def _builder_with_start(tmp_path: Path) -> remote.RemoteBuilderDefinition:
+    return remote.RemoteBuilderDefinition(
+        name="gcp-builder",
+        ssh_target="sa@absconda-builder",
+        workspace="/srv/builds",
+        ssh_port=22,
+        ssh_key=None,
+        ssh_options=[],
+        start_command=["echo", "start"],
+        stop_command=None,
+        lock_file=tmp_path / "builder.lock",
+    )
+
+
+def test_start_remote_builder_polls_ssh_until_ready(monkeypatch, tmp_path: Path) -> None:
+    """A cold boot: SSH fails a few times, then succeeds — no fixed sleep race (#deploy)."""
+    definition = _builder_with_start(tmp_path)
+    monkeypatch.setattr(remote, "_run_subprocess", lambda *a, **k: None)
+    monkeypatch.setattr(remote.time, "sleep", lambda _s: None)
+
+    calls = {"n": 0}
+
+    def fake_ready(defn):
+        calls["n"] += 1
+        # Not ready for the first two probes, then ready.
+        return (calls["n"] >= 3, "" if calls["n"] >= 3 else "port 22: connection refused")
+
+    monkeypatch.setattr(remote, "_ssh_ready", fake_ready)
+
+    console = Console(file=io.StringIO())
+    remote.start_remote_builder(definition, console)
+    assert calls["n"] == 3  # retried until ready
+
+
+def test_wait_for_ssh_times_out(monkeypatch, tmp_path: Path) -> None:
+    definition = _builder_with_start(tmp_path)
+    monkeypatch.setattr(remote.time, "sleep", lambda _s: None)
+    # A monotonic clock that jumps past the deadline after the first failed probe.
+    ticks = iter([0.0, 1.0, 10_000.0, 10_001.0, 10_002.0])
+    monkeypatch.setattr(remote.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        remote, "_ssh_ready", lambda defn: (False, "4003: failed to connect to backend")
+    )
+
+    console = Console(file=io.StringIO())
+    with pytest.raises(remote.RemoteError, match="did not accept SSH"):
+        remote._wait_for_ssh(definition, console, timeout=60, interval=1)
+
+
+def test_ssh_ready_uses_noop_command(monkeypatch, tmp_path: Path) -> None:
+    """_ssh_ready probes with a trivial ':' command and maps exit code to readiness."""
+    definition = _builder_with_start(tmp_path)
+    recorded = {}
+
+    class _Result:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = ""
+            self.stderr = "boom" if rc else ""
+
+    def fake_run(command, **kwargs):
+        recorded["command"] = command
+        return _Result(0)
+
+    monkeypatch.setattr(remote.subprocess, "run", fake_run)
+    ready, detail = remote._ssh_ready(definition)
+    assert ready is True and detail == ""
+    assert recorded["command"][-1].endswith("bash -lc :") or recorded["command"][-1] == "bash -lc :"
+
+
 def test_check_remote_status_reports_lock_and_health(monkeypatch, tmp_path: Path) -> None:
     lock_path = tmp_path / "builder.lock"
     lock_path.write_text("runner@example", encoding="utf-8")

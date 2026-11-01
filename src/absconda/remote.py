@@ -97,14 +97,65 @@ def provision_remote_builder(definition: RemoteBuilderDefinition, console: Conso
     _run_subprocess(definition.provision_command)
 
 
+# Readiness polling after a cold start. `gcloud instances start` returns once the
+# VM is RUNNING, but sshd / the IAP backend on port 22 is typically not ready for
+# another 30-90s, so a fixed sleep races the boot and fails with
+# "4003: failed to connect to backend (port 22)". Poll SSH instead.
+SSH_READY_TIMEOUT = 300
+SSH_READY_INTERVAL = 10
+
+
+def _ssh_ready(definition: RemoteBuilderDefinition) -> tuple[bool, str]:
+    """Return (ready, detail) by running a trivial no-op command over SSH."""
+    command = _remote_shell_command(definition, ":")
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+        )
+    except FileNotFoundError as exc:  # gcloud/ssh missing — not a transient boot issue
+        raise RemoteError(f"Command '{command[0]}' not found: {exc}") from exc
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr or result.stdout or "").strip()
+
+
+def _wait_for_ssh(
+    definition: RemoteBuilderDefinition,
+    console: Console,
+    *,
+    timeout: int = SSH_READY_TIMEOUT,
+    interval: int = SSH_READY_INTERVAL,
+) -> None:
+    """Poll SSH until the builder accepts a connection or ``timeout`` elapses."""
+    console.print("Waiting for the instance to accept SSH...")
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    last_detail = ""
+    while True:
+        attempt += 1
+        ready, last_detail = _ssh_ready(definition)
+        if ready:
+            console.print(f"Instance is ready for SSH (attempt {attempt}).")
+            return
+        if time.monotonic() >= deadline:
+            raise RemoteError(
+                f"Builder '{definition.name}' did not accept SSH within {timeout}s of "
+                f"starting. Last error: {last_detail or 'connection failed'}"
+            )
+        console.print(f"[dim]  not ready yet (attempt {attempt}); retrying in {interval}s...[/dim]")
+        time.sleep(interval)
+
+
 def start_remote_builder(definition: RemoteBuilderDefinition, console: Console) -> None:
     if definition.start_command is None:
         raise RemoteConfigError(f"Builder '{definition.name}' does not define a start_command.")
     console.print(f"Starting remote builder [cyan]{definition.name}[/cyan]...")
     _run_subprocess(definition.start_command)
-    # Wait for instance to be ready for SSH connections
-    console.print("Waiting for instance to be ready...")
-    time.sleep(30)
+    # Poll for SSH readiness instead of a fixed sleep (see note above).
+    _wait_for_ssh(definition, console)
 
 
 def stop_remote_builder(definition: RemoteBuilderDefinition, console: Console) -> None:

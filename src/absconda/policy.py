@@ -39,6 +39,8 @@ class PolicyProfile:
     required_labels: Dict[str, str]
     default_fragments: List[str]
     raw: dict[str, Any] = field(repr=False)
+    # Runtime environment variables baked into the image as ENV (issue #68).
+    runtime_env: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -61,7 +63,38 @@ _DEFAULT_PROFILE = PolicyProfile(
     required_labels={},
     default_fragments=[],
     raw={},
+    runtime_env={},
 )
+
+# Thread-limiting vars for bit-reproducible numerical results; see issue #68 and
+# absconda.provenance.REPRODUCIBLE_RUNTIME_ENV (kept in sync, duplicated here to
+# avoid a circular import between policy and provenance).
+_REPRODUCIBLE_RUNTIME_ENV = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+}
+
+# Built-in profiles selectable with --profile even without a policy file.
+_REPRODUCIBLE_PROFILE = PolicyProfile(
+    name="reproducible",
+    builder_base=None,
+    runtime_base=None,
+    multi_stage=None,
+    env_prefix="/opt/conda/envs",
+    allowed_channels=[],
+    required_labels={},
+    default_fragments=[],
+    raw={},
+    runtime_env=dict(_REPRODUCIBLE_RUNTIME_ENV),
+)
+
+_BUILTIN_PROFILES: Dict[str, PolicyProfile] = {
+    "default": _DEFAULT_PROFILE,
+    "reproducible": _REPRODUCIBLE_PROFILE,
+}
 
 
 def _discover_policy_path(explicit: Optional[Path]) -> Optional[Path]:
@@ -124,9 +157,11 @@ def _read_policy_yaml(path: Path) -> dict[str, Any]:
 def _parse_profiles(data: dict[str, Any]) -> dict[str, PolicyProfile]:
     profiles_raw = data.get("profiles")
     if not isinstance(profiles_raw, dict) or not profiles_raw:
-        return {"default": _DEFAULT_PROFILE}
+        return dict(_BUILTIN_PROFILES)
 
-    profiles: dict[str, PolicyProfile] = {}
+    # Start from the built-ins so `default`/`reproducible` stay available even
+    # when a policy file defines its own profiles; file entries override by name.
+    profiles: dict[str, PolicyProfile] = dict(_BUILTIN_PROFILES)
     for name, value in profiles_raw.items():
         if not isinstance(value, dict):
             raise PolicyLoadError(f"Profile '{name}' must be a mapping of settings.")
@@ -149,6 +184,10 @@ def _parse_profiles(data: dict[str, Any]) -> dict[str, PolicyProfile]:
                 f"profiles.{name}.default_fragments",
             ),
             raw=value,
+            runtime_env=_string_dict(
+                value.get("runtime_env", {}),
+                f"profiles.{name}.runtime_env",
+            ),
         )
         profiles[name] = profile
 
@@ -228,12 +267,22 @@ def load_policy(policy_path: Optional[Path], profile_name: Optional[str]) -> Pol
     resolved_path = _discover_policy_path(policy_path)
 
     if resolved_path is None:
-        # No policy found; use built-in defaults silently.
+        # No policy file found; select from the built-in profiles so
+        # `--profile reproducible` still works. Unknown names fall back to the
+        # default profile with a warning rather than erroring.
+        selected = profile_name or "default"
+        builtin = _BUILTIN_PROFILES.get(selected)
+        builtin_warnings: list[str] = []
+        if builtin is None:
+            builtin_warnings.append(
+                f"Profile '{selected}' not found (no policy file); using 'default'."
+            )
+            builtin = _DEFAULT_PROFILE
         return PolicyResolution(
             source_path=None,
-            profile=_DEFAULT_PROFILE,
+            profile=builtin,
             hooks=PolicyHooks(),
-            warnings=[],
+            warnings=builtin_warnings,
         )
 
     data = _read_policy_yaml(resolved_path)

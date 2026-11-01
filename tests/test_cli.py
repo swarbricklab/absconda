@@ -119,6 +119,93 @@ def test_build_uses_remote_builder_when_requested(monkeypatch, tmp_path: Path) -
     assert calls["args"]["image_ref"] == "ghcr.io/example/absconda:20250101"
 
 
+def test_publish_emits_digest_lockfile_and_visibility(monkeypatch, tmp_path: Path) -> None:
+    """publish resolves the digest, writes the lockfile, and sets visibility (#69/#71)."""
+    import yaml
+
+    import absconda.cli as cli_mod
+
+    env_path = write_env(tmp_path)
+    lockfile = tmp_path / "containers.lock.yaml"
+    visibility_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(cli_mod, "_resolve_remote_options", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_build_image_local", lambda *a, **k: k["repository"] + ":" + "x")
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_pushed_digest",
+        lambda ref: "ghcr.io/example/cli-demo@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_set_ghcr_visibility",
+        lambda ref, vis: visibility_calls.append((ref, vis)),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "publish",
+            "--repository",
+            "ghcr.io/example/cli-demo",
+            "--tag",
+            "x",
+            "--file",
+            str(env_path),
+            "--lockfile",
+            str(lockfile),
+            "--visibility",
+            "public",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Image digest:" in result.output  # exact value checked via lockfile below
+    assert visibility_calls == [("ghcr.io/example/cli-demo:x", "public")]
+
+    data = yaml.safe_load(lockfile.read_text())
+    assert "cli-demo" in data
+    entry = data["cli-demo"]
+    assert entry["image"] == "ghcr.io/example/cli-demo:x"
+    assert entry["digest"] == "ghcr.io/example/cli-demo@sha256:" + "a" * 64
+    assert entry["edf_sha256"].startswith("sha256:")
+    assert entry["absconda_version"]
+
+
+def test_publish_rejects_invalid_visibility(tmp_path: Path) -> None:
+    env_path = write_env(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "publish",
+            "--repository",
+            "ghcr.io/example/cli-demo",
+            "--file",
+            str(env_path),
+            "--visibility",
+            "world-readable",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code != 0
+    assert "must be 'public' or 'private'" in result.output
+
+
+def test_build_rejects_malformed_env(tmp_path: Path) -> None:
+    env_path = write_env(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["build", "--file", str(env_path), "--env", "NOEQUALS", "--repository", "x/y"],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code != 0
+    assert "KEY=VALUE" in result.output
+
+
 def test_remote_list_shows_builders(tmp_path: Path) -> None:
     config_path = write_remote_config(tmp_path)
 

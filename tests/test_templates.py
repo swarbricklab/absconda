@@ -132,6 +132,38 @@ def test_render_bakes_runtime_env_and_provenance_labels() -> None:
     assert dockerfile.index("OMP_NUM_THREADS") < dockerfile.rindex("CMD")
 
 
+def _pip_env_config(pip_check: str) -> RenderConfig:
+    return RenderConfig(
+        env=make_pip_env(),
+        profile=make_profile(),
+        multi_stage=True,
+        builder_base=DEFAULT_BUILDER_IMAGE,
+        runtime_base="debian:bookworm-slim",
+        template_path=None,
+        pip_check=pip_check,
+    )
+
+
+def test_pip_check_error_is_fatal_default() -> None:
+    dockerfile = render_dockerfile(_pip_env_config("error"))
+    assert "python -m pip check && \\" in dockerfile
+    assert "|| echo" not in dockerfile
+
+
+def test_pip_check_warn_is_non_fatal() -> None:
+    dockerfile = render_dockerfile(_pip_env_config("warn"))
+    # Grouped so a failing pip check is reported but does not abort the build.
+    assert "python -m pip check || echo" in dockerfile
+    assert "pip_check=warn" in dockerfile
+
+
+def test_pip_check_skip_omits_the_check() -> None:
+    dockerfile = render_dockerfile(_pip_env_config("skip"))
+    assert "pip check" not in dockerfile
+    # The pip install step is still present (only the check is dropped).
+    assert "pip install" in dockerfile
+
+
 def test_render_policy_label_overrides_provenance_on_conflict() -> None:
     profile = make_profile()
     profile.required_labels["org.absconda.version"] = "policy-wins"

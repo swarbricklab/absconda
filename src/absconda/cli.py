@@ -665,6 +665,46 @@ def _resolve_min_free_gb(min_free_gb: Optional[float]) -> float:
         return 0.0
 
 
+_PIP_CHECK_MODES = ("error", "warn", "skip")
+
+
+def _pip_check_flag(pip_check: Optional[str], no_pip_check: bool) -> Optional[str]:
+    """Collapse the --pip-check / --no-pip-check flags into an override or None.
+
+    Returns the chosen mode string when a flag is given (so it overrides config),
+    or None to defer to config 'build.pip_check' / the default. Exits on a
+    conflicting combination.
+    """
+    if no_pip_check:
+        if pip_check is not None and pip_check != "skip":
+            err_console.print(
+                f"[red]Error:[/red] --no-pip-check conflicts with --pip-check {pip_check}."
+            )
+            raise typer.Exit(code=1)
+        return "skip"
+    return pip_check
+
+
+def _resolve_pip_check(pip_check_override: Optional[str]) -> str:
+    """Resolve the pip-check mode: flag override, else config, else 'error'.
+
+    Validates the value (whether from the flag or config) so a typo fails loudly.
+    """
+    value = (
+        pip_check_override
+        if pip_check_override is not None
+        else cfg.get_config_value("build.pip_check")
+    )
+    if value is None:
+        return "error"
+    if value not in _PIP_CHECK_MODES:
+        err_console.print(
+            f"[red]Error:[/red] pip-check mode must be one of {_PIP_CHECK_MODES}, got '{value}'."
+        )
+        raise typer.Exit(code=1)
+    return value
+
+
 def _detect_env_name_from_dockerfile(dockerfile_text: str) -> Optional[str]:
     """Extract the conda env name from an absconda-generated Dockerfile.
 
@@ -881,6 +921,7 @@ def _build_image_local(
     env_overrides: Optional[Dict[str, str]] = None,
     env_file: Optional[Path] = None,
     embed_dockerfile: bool = False,
+    pip_check: Optional[str] = None,
 ) -> str:
     if dockerfile_override is not None:
         dockerfile = dockerfile_override
@@ -896,6 +937,7 @@ def _build_image_local(
             renv_lock=renv_lock,
             env_overrides=env_overrides,
             env_file=env_file,
+            pip_check=pip_check,
         )
     else:
         raise RuntimeError("Either dockerfile_override or report must be provided")
@@ -976,6 +1018,7 @@ def _build_image_remote(
     env_overrides: Optional[Dict[str, str]] = None,
     env_file: Optional[Path] = None,
     embed_dockerfile: bool = False,
+    pip_check: Optional[str] = None,
 ) -> str:
     if dockerfile_override is not None:
         dockerfile = dockerfile_override
@@ -991,6 +1034,7 @@ def _build_image_remote(
             renv_lock=renv_lock,
             env_overrides=env_overrides,
             env_file=env_file,
+            pip_check=pip_check,
         )
     else:
         raise RuntimeError("Either dockerfile_override or report must be provided")
@@ -1083,6 +1127,7 @@ def _render_dockerfile(
     renv_lock: Optional[str] = None,
     env_overrides: Optional[Dict[str, str]] = None,
     env_file: Optional[Path] = None,
+    pip_check: Optional[str] = None,
 ) -> str:
     policy_resolution = _active_policy()
     profile = policy_resolution.profile
@@ -1161,6 +1206,7 @@ def _render_dockerfile(
         renv_lock=renv_lock,
         runtime_env=runtime_env,
         extra_labels=extra_labels,
+        pip_check=_resolve_pip_check(pip_check),
     )
 
     try:
@@ -1246,6 +1292,21 @@ def generate(
             "Repeatable; overrides a policy 'runtime_env' entry with the same key."
         ),
     ),
+    pip_check: Optional[str] = typer.Option(
+        None,
+        "--pip-check",
+        help=(
+            "In-build pip check gate: 'error' (default, fail on a dependency "
+            "inconsistency), 'warn' (report and proceed), or 'skip'. Defaults to "
+            "config 'build.pip_check'. Use warn/skip to package a legacy env with "
+            "tolerated conflicts faithfully."
+        ),
+    ),
+    no_pip_check: bool = typer.Option(
+        False,
+        "--no-pip-check",
+        help="Alias for --pip-check skip.",
+    ),
 ) -> None:
     """Generate a Dockerfile from the provided environment file, tarball, or requirements."""
 
@@ -1259,6 +1320,7 @@ def generate(
     _print_warnings(report)
     _enforce_policy_constraints(report)
     env_overrides = _parse_env_overrides(env)
+    pip_check_mode = _pip_check_flag(pip_check, no_pip_check)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
     dockerfile = _render_dockerfile(
         report,
@@ -1270,6 +1332,7 @@ def generate(
         renv_lock=renv_lock_text,
         env_overrides=env_overrides,
         env_file=file,
+        pip_check=pip_check_mode,
     )
 
     if output is not None:
@@ -1509,6 +1572,21 @@ def build(
             "GITHUB_TOKEN with packages admin scope."
         ),
     ),
+    pip_check: Optional[str] = typer.Option(
+        None,
+        "--pip-check",
+        help=(
+            "In-build pip check gate: 'error' (default, fail on a dependency "
+            "inconsistency), 'warn' (report and proceed), or 'skip'. Defaults to "
+            "config 'build.pip_check'. Use warn/skip to package a legacy env with "
+            "tolerated conflicts faithfully."
+        ),
+    ),
+    no_pip_check: bool = typer.Option(
+        False,
+        "--no-pip-check",
+        help="Alias for --pip-check skip.",
+    ),
 ) -> None:
     """Render a Dockerfile and build the container image."""
 
@@ -1611,6 +1689,7 @@ def build(
     if _resolve_check_wheels(check_wheels):
         _run_wheel_check(report)
     env_overrides = _parse_env_overrides(env)
+    pip_check_mode = _pip_check_flag(pip_check, no_pip_check)
     resolved_visibility = _resolve_visibility(visibility)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
@@ -1642,6 +1721,7 @@ def build(
             env_overrides=env_overrides,
             env_file=file,
             embed_dockerfile=embed_dockerfile,
+            pip_check=pip_check_mode,
         )
     else:
         image_ref = _build_image_local(
@@ -1661,6 +1741,7 @@ def build(
             env_overrides=env_overrides,
             env_file=file,
             embed_dockerfile=embed_dockerfile,
+            pip_check=pip_check_mode,
         )
 
     err_console.print(f"[green]Image built:[/green] {image_ref}")
@@ -1848,6 +1929,21 @@ def publish(
             "'publish.visibility' when unset."
         ),
     ),
+    pip_check: Optional[str] = typer.Option(
+        None,
+        "--pip-check",
+        help=(
+            "In-build pip check gate: 'error' (default, fail on a dependency "
+            "inconsistency), 'warn' (report and proceed), or 'skip'. Defaults to "
+            "config 'build.pip_check'. Use warn/skip to package a legacy env with "
+            "tolerated conflicts faithfully."
+        ),
+    ),
+    no_pip_check: bool = typer.Option(
+        False,
+        "--no-pip-check",
+        help="Alias for --pip-check skip.",
+    ),
 ) -> None:
     """Build a container image and push it to a registry."""
 
@@ -1948,6 +2044,7 @@ def publish(
     if _resolve_check_wheels(check_wheels):
         _run_wheel_check(report)
     env_overrides = _parse_env_overrides(env)
+    pip_check_mode = _pip_check_flag(pip_check, no_pip_check)
     resolved_visibility = _resolve_visibility(visibility)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
@@ -1979,6 +2076,7 @@ def publish(
             env_overrides=env_overrides,
             env_file=file,
             embed_dockerfile=embed_dockerfile,
+            pip_check=pip_check_mode,
         )
     else:
         image_ref = _build_image_local(
@@ -1998,6 +2096,7 @@ def publish(
             env_overrides=env_overrides,
             env_file=file,
             embed_dockerfile=embed_dockerfile,
+            pip_check=pip_check_mode,
         )
 
     err_console.print(f"[green]Image pushed:[/green] {image_ref}")

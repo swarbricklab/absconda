@@ -37,7 +37,11 @@ RUN micromamba create -y -n {{ env_name }} {{ channel_flags }} -f /tmp/env.yaml 
     micromamba run -n {{ env_name }} python -m pip list --format=freeze > /tmp/conda.constraints.txt && \
     micromamba run -n {{ env_name }} python -m pip install --no-cache-dir \
         --constraint /tmp/conda.constraints.txt --requirement /tmp/requirements.txt && \
+{% if pip_check == "error" %}
     micromamba run -n {{ env_name }} python -m pip check && \
+{% elif pip_check == "warn" %}
+    { micromamba run -n {{ env_name }} python -m pip check || echo "absconda: pip check reported dependency inconsistencies (tolerated via pip_check=warn)" >&2; } && \
+{% endif %}
 {% endif %}
     micromamba clean -afy && \
     rm -f /tmp/env.yaml{% if has_pip %} /tmp/requirements.txt /tmp/conda.constraints.txt{% endif %}

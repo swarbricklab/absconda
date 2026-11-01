@@ -477,18 +477,43 @@ publish:
   visibility: public   # applied to ghcr.io pushes
 ```
 
+## Packaging Legacy Environments (`pip check`)
+
+`build`/`publish` run `python -m pip check` inside the build and **fail on any
+dependency inconsistency** by default (`--pip-check error`). That's right for new
+environments, but it blocks faithfully containerising a **legacy** env that
+already carries tolerated conflicts (e.g. the exact env that produced published
+results). Downgrade the gate when you need to package such an env as-is:
+
+```bash
+# Report the inconsistency but build anyway:
+absconda build --file legacy-env.yaml --repository myimage --pip-check warn
+
+# Don't run pip check at all:
+absconda build --file legacy-env.yaml --repository myimage --no-pip-check   # == --pip-check skip
+```
+
+- `error` (default) — fatal, as before.
+- `warn` — runs `pip check`, prints any inconsistency, and continues.
+- `skip` — omits the check from the generated Dockerfile entirely.
+
+The default stays `error`; use `warn`/`skip` only for envs whose conflicts are
+known-benign and must not be "fixed" (which would change the env).
+
 ## Config Defaults for build/publish
 
-Several opt-in flags can be set as defaults under `publish:` in any XDG config
-file (user `~/.config/absconda/config.yaml` or a shared/system one via
-`XDG_CONFIG_DIRS`), so a team doesn't have to pass them every time. An explicit
-CLI flag always overrides the config default.
+Several opt-in flags can be set as defaults in any XDG config file (user
+`~/.config/absconda/config.yaml` or a shared/system one via `XDG_CONFIG_DIRS`),
+so a team doesn't have to pass them every time. An explicit CLI flag always
+overrides the config default.
 
 ```yaml
 publish:
   visibility: public      # --visibility: set ghcr package visibility on push
   check_wheels: true      # --check-wheels: validate CUDA wheel triples online
   min_free_gb: 10         # --min-free-gb: pre-build free-space guard (local builds)
+build:
+  pip_check: error        # --pip-check: error | warn | skip (default error)
 ```
 
 ## Next Steps

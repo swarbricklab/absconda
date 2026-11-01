@@ -34,7 +34,11 @@ RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
     micromamba run -n {{ env_name }} python -m pip list --format=freeze > /tmp/conda.constraints.txt && \
     micromamba run -n {{ env_name }} python -m pip install --no-cache-dir \
         --constraint /tmp/conda.constraints.txt --requirement /tmp/requirements.txt && \
+{% if pip_check == "error" %}
     micromamba run -n {{ env_name }} python -m pip check && \
+{% elif pip_check == "warn" %}
+    { micromamba run -n {{ env_name }} python -m pip check || echo "absconda: pip check reported dependency inconsistencies (tolerated via pip_check=warn)" >&2; } && \
+{% endif %}
 {% endif %}
     micromamba clean -afy && \
     micromamba run -n base conda-pack -p {{ env_dir }} -o /tmp/absconda-env.tar.gz && \

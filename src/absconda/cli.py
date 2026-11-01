@@ -637,6 +637,34 @@ def _resolve_visibility(visibility: Optional[str]) -> Optional[str]:
     return value
 
 
+def _resolve_check_wheels(check_wheels: Optional[bool]) -> bool:
+    """Resolve --check-wheels, falling back to config 'publish.check_wheels'.
+
+    The flag (``--check-wheels/--no-check-wheels``) wins when given; otherwise the
+    team/user config default applies, else off.
+    """
+    if check_wheels is not None:
+        return check_wheels
+    return bool(cfg.get_config_value("publish.check_wheels"))
+
+
+def _resolve_min_free_gb(min_free_gb: Optional[float]) -> float:
+    """Resolve --min-free-gb, falling back to config 'publish.min_free_gb' (else 0)."""
+    if min_free_gb is not None:
+        return min_free_gb
+    configured = cfg.get_config_value("publish.min_free_gb")
+    if configured is None:
+        return 0.0
+    try:
+        return float(configured)
+    except (TypeError, ValueError):
+        err_console.print(
+            "[bold yellow]warning[/bold yellow]: config 'publish.min_free_gb' is not a "
+            f"number ({configured!r}); ignoring."
+        )
+        return 0.0
+
+
 def _detect_env_name_from_dockerfile(dockerfile_text: str) -> Optional[str]:
     """Extract the conda env name from an absconda-generated Dockerfile.
 
@@ -1429,8 +1457,8 @@ def build(
             "this (or --repository) is required to determine the target repository."
         ),
     ),
-    check_wheels: bool = typer.Option(
-        False,
+    check_wheels: Optional[bool] = typer.Option(
+        None,
         "--check-wheels/--no-check-wheels",
         help=(
             "Validate pinned CUDA wheels (torch/torchvision/torchaudio) against the "
@@ -1439,8 +1467,8 @@ def build(
             "an unreachable index only warns."
         ),
     ),
-    min_free_gb: float = typer.Option(
-        0.0,
+    min_free_gb: Optional[float] = typer.Option(
+        None,
         "--min-free-gb",
         help=(
             "Fail before building if the Docker data dir has less than this many GB "
@@ -1580,7 +1608,7 @@ def build(
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
-    if check_wheels:
+    if _resolve_check_wheels(check_wheels):
         _run_wheel_check(report)
     env_overrides = _parse_env_overrides(env)
     resolved_visibility = _resolve_visibility(visibility)
@@ -1593,7 +1621,7 @@ def build(
 
     if not remote_opts:
         # Local build only: a remote builder's data dir is opaque from here.
-        _check_build_disk_space(min_free_gb)
+        _check_build_disk_space(_resolve_min_free_gb(min_free_gb))
 
     if remote_opts:
         image_ref = _build_image_remote(
@@ -1767,8 +1795,8 @@ def publish(
             "this (or --repository) is required to determine the target repository."
         ),
     ),
-    check_wheels: bool = typer.Option(
-        False,
+    check_wheels: Optional[bool] = typer.Option(
+        None,
         "--check-wheels/--no-check-wheels",
         help=(
             "Validate pinned CUDA wheels (torch/torchvision/torchaudio) against the "
@@ -1777,8 +1805,8 @@ def publish(
             "an unreachable index only warns."
         ),
     ),
-    min_free_gb: float = typer.Option(
-        0.0,
+    min_free_gb: Optional[float] = typer.Option(
+        None,
         "--min-free-gb",
         help=(
             "Fail before building if the Docker data dir has less than this many GB "
@@ -1917,7 +1945,7 @@ def publish(
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
-    if check_wheels:
+    if _resolve_check_wheels(check_wheels):
         _run_wheel_check(report)
     env_overrides = _parse_env_overrides(env)
     resolved_visibility = _resolve_visibility(visibility)
@@ -1930,7 +1958,7 @@ def publish(
 
     if not remote_opts:
         # Local build only: a remote builder's data dir is opaque from here.
-        _check_build_disk_space(min_free_gb)
+        _check_build_disk_space(_resolve_min_free_gb(min_free_gb))
 
     if remote_opts:
         image_ref = _build_image_remote(

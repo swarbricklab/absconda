@@ -1,6 +1,8 @@
 name: Publish to PyPI
 
 on:
+  push:
+    tags: ['v*']  # Publish on a version tag, e.g. v0.3.0
   release:
     types: [published]
   workflow_dispatch:  # Allow manual trigger

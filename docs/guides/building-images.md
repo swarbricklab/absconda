@@ -399,6 +399,25 @@ absconda --profile production validate --file environment.yaml
 # Shows which policy is active and any constraint violations
 ```
 
+### Builder Runs Out of Disk (`No space left on device`)
+
+The generated conda-pack layer transiently holds the environment ~2–3× on disk
+(the created env, the packed tarball, and the re-extracted env). absconda runs
+`micromamba clean -afy` before packing to free the package cache first, which
+keeps warm/shared builders from tipping into `ENOSPC` mid-pack.
+
+For an extra guard, fail fast *before* the build if the Docker data dir is low on
+space (local builds only):
+
+```bash
+absconda build --file environment.yaml --min-free-gb 10
+# Errors with the measured free space if below the threshold, instead of a
+# cryptic mid-build "tar: No space left on device". 0 (default) disables it.
+```
+
+On a warm builder that accumulates BuildKit cache, periodically run
+`docker builder prune` / `docker image prune` to reclaim space.
+
 ## Next Steps
 
 - [Remote Builders](remote-builders.md) - Build on GCP

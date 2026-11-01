@@ -24,6 +24,10 @@ ABSCONDA_RENV_LOCK
 # Install conda packages first, then pip packages constrained to the versions
 # conda resolved (pip otherwise ignores conda's pins and may upgrade past them).
 # pip fails on a conflict instead of silently clobbering a pinned package.
+# `micromamba clean -afy` runs before conda-pack to drop the package cache
+# (/opt/conda/pkgs): conda-pack then tar-extract transiently hold the env ~2-3x
+# on disk, so freeing the cache first keeps warm/shared builders from hitting
+# ENOSPC mid-pack (issue #52).
 RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
     micromamba create -y -n {{ env_name }} -f /tmp/env.yaml && \
 {% if has_pip %}
@@ -32,6 +36,7 @@ RUN micromamba install -y -n base {{ channel_flags }} conda-pack && \
         --constraint /tmp/conda.constraints.txt --requirement /tmp/requirements.txt && \
     micromamba run -n {{ env_name }} python -m pip check && \
 {% endif %}
+    micromamba clean -afy && \
     micromamba run -n base conda-pack -p {{ env_dir }} -o /tmp/absconda-env.tar.gz && \
     mkdir -p {{ env_dir }} && \
     tar -xzf /tmp/absconda-env.tar.gz -C {{ env_dir }} && \

@@ -181,6 +181,88 @@ def _print_warning_messages(messages: Iterable[str]) -> None:
         err_console.print(f"[bold yellow]warning[/bold yellow]: {warning}")
 
 
+def _run_wheel_check(report: LoadReport) -> None:
+    """Validate pinned CUDA wheels online, failing fast on a confirmed-missing one.
+
+    Opt-in (``--check-wheels``). A reachable index with no matching wheel is a
+    hard error (the build would otherwise fail ~60s into the pip layer); an
+    unreachable index or an unknowable triple only warns and lets the build go on.
+    """
+    if report.env is None:
+        return
+
+    from .gpu_lint import check_wheel_triples
+
+    results = check_wheel_triples(report.env)
+    if not results:
+        err_console.print("[dim]--check-wheels: no pinned CUDA wheels to validate.[/dim]")
+        return
+
+    missing = [r for r in results if r.status == "missing"]
+    for result in results:
+        if result.status == "ok":
+            err_console.print(f"[green]wheel ok[/green]: {result.detail}")
+        elif result.status in ("skipped", "not_applicable"):
+            err_console.print(f"[bold yellow]warning[/bold yellow]: {result.detail}")
+
+    if missing:
+        for result in missing:
+            err_console.print(f"[red]Error:[/red] {result.detail}")
+        raise typer.Exit(code=1)
+
+
+def _check_build_disk_space(min_free_gb: float) -> None:
+    """Fail fast when the Docker data dir has less than ``min_free_gb`` free.
+
+    Turns a cryptic mid-build ``tar: No space left on device`` (issue #52) into an
+    actionable message. Best-effort and local-only: if Docker's data root cannot
+    be determined or measured (remote daemon, permissions), it warns and proceeds.
+    """
+    if min_free_gb <= 0:
+        return
+
+    import shutil
+
+    data_root: Optional[str] = None
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.DockerRootDir}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        data_root = result.stdout.strip() or None
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        err_console.print(
+            f"[bold yellow]warning[/bold yellow]: could not query Docker data dir "
+            f"for the --min-free-gb check ({exc}); proceeding."
+        )
+        return
+
+    probe = data_root if data_root and Path(data_root).exists() else "/"
+    try:
+        free_gb = shutil.disk_usage(probe).free / 1e9
+    except OSError as exc:
+        err_console.print(
+            f"[bold yellow]warning[/bold yellow]: could not measure free space on "
+            f"'{probe}' ({exc}); proceeding."
+        )
+        return
+
+    if free_gb < min_free_gb:
+        err_console.print(
+            f"[red]Error:[/red] Docker data dir '{probe}' has only {free_gb:.1f} GB "
+            f"free, below the --min-free-gb={min_free_gb:g} threshold. conda-pack "
+            "builds transiently need several GB of headroom; free space (e.g. "
+            "'docker builder prune', 'docker image prune') or lower the threshold."
+        )
+        raise typer.Exit(code=1)
+
+    err_console.print(
+        f"[dim]--min-free-gb: {free_gb:.1f} GB free on '{probe}' (>= {min_free_gb:g} GB).[/dim]"
+    )
+
+
 def _enforce_policy_constraints(report: LoadReport) -> None:
     profile = _active_policy().profile
     allowed = profile.allowed_channels
@@ -951,6 +1033,24 @@ def build(
             "this (or --repository) is required to determine the target repository."
         ),
     ),
+    check_wheels: bool = typer.Option(
+        False,
+        "--check-wheels/--no-check-wheels",
+        help=(
+            "Validate pinned CUDA wheels (torch/torchvision/torchaudio) against the "
+            "download.pytorch.org index before building, so a (python, version, cuda) "
+            "mismatch fails fast instead of ~60s into the pip layer. Off by default; "
+            "an unreachable index only warns."
+        ),
+    ),
+    min_free_gb: float = typer.Option(
+        0.0,
+        "--min-free-gb",
+        help=(
+            "Fail before building if the Docker data dir has less than this many GB "
+            "free (local builds only). 0 disables the check (default)."
+        ),
+    ),
 ) -> None:
     """Render a Dockerfile and build the container image."""
 
@@ -1037,12 +1137,18 @@ def build(
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
+    if check_wheels:
+        _run_wheel_check(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
     resolved_env_name = env_name if env_name is not None else report.env_name
     resolved_repository = _resolve_repository(repository, resolved_env_name)
 
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
+
+    if not remote_opts:
+        # Local build only: a remote builder's data dir is opaque from here.
+        _check_build_disk_space(min_free_gb)
 
     if remote_opts:
         image_ref = _build_image_remote(
@@ -1202,6 +1308,24 @@ def publish(
             "this (or --repository) is required to determine the target repository."
         ),
     ),
+    check_wheels: bool = typer.Option(
+        False,
+        "--check-wheels/--no-check-wheels",
+        help=(
+            "Validate pinned CUDA wheels (torch/torchvision/torchaudio) against the "
+            "download.pytorch.org index before building, so a (python, version, cuda) "
+            "mismatch fails fast instead of ~60s into the pip layer. Off by default; "
+            "an unreachable index only warns."
+        ),
+    ),
+    min_free_gb: float = typer.Option(
+        0.0,
+        "--min-free-gb",
+        help=(
+            "Fail before building if the Docker data dir has less than this many GB "
+            "free (local builds only). 0 disables the check (default)."
+        ),
+    ),
 ) -> None:
     """Build a container image and push it to a registry."""
 
@@ -1286,12 +1410,18 @@ def publish(
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
+    if check_wheels:
+        _run_wheel_check(report)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
     resolved_env_name = env_name if env_name is not None else report.env_name
     resolved_repository = _resolve_repository(repository, resolved_env_name)
 
     remote_opts = _resolve_remote_options(remote_builder, remote_config, remote_wait, remote_off)
+
+    if not remote_opts:
+        # Local build only: a remote builder's data dir is opaque from here.
+        _check_build_disk_space(min_free_gb)
 
     if remote_opts:
         image_ref = _build_image_remote(

@@ -99,18 +99,42 @@ def render_dockerfile(config: RenderConfig) -> str:
 
 
 def _render_builtin_template(context: Dict[str, Any]) -> str:
-    resource = resources.files(_TEMPLATE_PACKAGE)
-    with resources.as_file(resource) as template_root:
-        loader = FileSystemLoader(str(template_root))
-        env = Environment(
-            loader=loader,
-            undefined=StrictUndefined,
-            trim_blocks=True,
-            lstrip_blocks=True,
-            keep_trailing_newline=True,
-        )
-        template = env.get_template(_DEFAULT_TEMPLATE_NAME)
-        return template.render(**context)
+    # importlib.resources is the canonical lookup, but ``as_file`` on a *directory*
+    # traversable raises "MultiplexedPath(...) is not a file" on some installed
+    # layouts (issue #65), so a pip-installed absconda could not load its own
+    # templates. The templates are always shipped on disk next to this module
+    # (package-data), so fall back to that path when the resource lookup can't
+    # produce a usable directory.
+    try:
+        resource = resources.files(_TEMPLATE_PACKAGE)
+        with resources.as_file(resource) as template_root:
+            root = Path(template_root)
+            if root.is_dir():
+                return _render_from_dir(root, context)
+    except (FileNotFoundError, ModuleNotFoundError, NotADirectoryError, TypeError, ValueError):
+        pass
+
+    fallback = Path(__file__).resolve().parent / "_templates"
+    if fallback.is_dir():
+        return _render_from_dir(fallback, context)
+
+    raise TemplateRenderError(
+        f"Could not locate bundled templates (tried package '{_TEMPLATE_PACKAGE}' and "
+        f"'{fallback}'). The installed distribution may be missing _templates/**."
+    )
+
+
+def _render_from_dir(template_root: Path, context: Dict[str, Any]) -> str:
+    loader = FileSystemLoader(str(template_root))
+    env = Environment(
+        loader=loader,
+        undefined=StrictUndefined,
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    template = env.get_template(_DEFAULT_TEMPLATE_NAME)
+    return template.render(**context)
 
 
 def _render_custom_template(template_path: Path, context: Dict[str, Any]) -> str:

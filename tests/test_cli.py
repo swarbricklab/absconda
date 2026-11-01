@@ -194,6 +194,43 @@ def test_publish_rejects_invalid_visibility(tmp_path: Path) -> None:
     assert "must be 'public' or 'private'" in result.output
 
 
+def test_publish_flag_defaults_resolve_from_config(monkeypatch) -> None:
+    """check_wheels / min_free_gb fall back to config when the flag is unset (#52/#59)."""
+    import absconda.cli as cli_mod
+
+    values = {
+        "publish.check_wheels": True,
+        "publish.min_free_gb": 10,
+        "publish.visibility": "public",
+    }
+    monkeypatch.setattr(cli_mod.cfg, "get_config_value", lambda key: values.get(key))
+
+    # Flag unset -> config applies.
+    assert cli_mod._resolve_check_wheels(None) is True
+    assert cli_mod._resolve_min_free_gb(None) == 10.0
+    assert cli_mod._resolve_visibility(None) == "public"
+
+    # Explicit flag wins over config.
+    assert cli_mod._resolve_check_wheels(False) is False
+    assert cli_mod._resolve_min_free_gb(0.0) == 0.0
+
+
+def test_publish_flag_defaults_without_config(monkeypatch) -> None:
+    import absconda.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.cfg, "get_config_value", lambda key: None)
+    assert cli_mod._resolve_check_wheels(None) is False
+    assert cli_mod._resolve_min_free_gb(None) == 0.0
+    assert cli_mod._resolve_visibility(None) is None
+
+
+def test_min_free_gb_invalid_config_warns_and_ignores(monkeypatch) -> None:
+    import absconda.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.cfg, "get_config_value", lambda key: "lots")
+    assert cli_mod._resolve_min_free_gb(None) == 0.0
+
+
 def test_build_rejects_malformed_env(tmp_path: Path) -> None:
     env_path = write_env(tmp_path)
     runner = CliRunner()

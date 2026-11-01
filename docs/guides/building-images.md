@@ -477,6 +477,20 @@ publish:
   visibility: public   # applied to ghcr.io pushes
 ```
 
+## Config Defaults for build/publish
+
+Several opt-in flags can be set as defaults under `publish:` in any XDG config
+file (user `~/.config/absconda/config.yaml` or a shared/system one via
+`XDG_CONFIG_DIRS`), so a team doesn't have to pass them every time. An explicit
+CLI flag always overrides the config default.
+
+```yaml
+publish:
+  visibility: public      # --visibility: set ghcr package visibility on push
+  check_wheels: true      # --check-wheels: validate CUDA wheel triples online
+  min_free_gb: 10         # --min-free-gb: pre-build free-space guard (local builds)
+```
+
 ## Next Steps
 
 - [Remote Builders](remote-builders.md) - Build on GCP

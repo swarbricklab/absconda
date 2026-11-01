@@ -24,7 +24,7 @@ jobs:
       GCP_ZONE: australia-southeast1-a
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Authenticate to GCP (Workload Identity Federation)
         uses: google-github-actions/auth@v2
@@ -85,7 +85,7 @@ jobs:
       IMAGE_TAG: ${{ needs.publish.outputs.image_tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Authenticate to GCP (Workload Identity Federation)
         uses: google-github-actions/auth@v2

@@ -111,6 +111,44 @@ def test_render_raises_clear_error_when_templates_missing(monkeypatch) -> None:
         render_dockerfile(config)
 
 
+def test_render_bakes_runtime_env_and_provenance_labels() -> None:
+    """runtime_env -> ENV lines (#68); extra_labels -> LABEL lines (#70)."""
+    config = RenderConfig(
+        env=make_env(),
+        profile=make_profile(),
+        multi_stage=True,
+        builder_base=DEFAULT_BUILDER_IMAGE,
+        runtime_base="debian:bookworm-slim",
+        template_path=None,
+        runtime_env={"OMP_NUM_THREADS": "1", "MYVAR": "hello world"},
+        extra_labels={"org.absconda.env-sha256": "sha256:deadbeef"},
+    )
+    dockerfile = render_dockerfile(config)
+    assert 'ENV OMP_NUM_THREADS="1"' in dockerfile
+    assert 'ENV MYVAR="hello world"' in dockerfile
+    assert 'LABEL org.absconda.env-sha256="sha256:deadbeef"' in dockerfile
+    # Runtime ENV lands after the standard export block, before CMD.
+    assert dockerfile.index("CONDA_PREFIX") < dockerfile.index("OMP_NUM_THREADS")
+    assert dockerfile.index("OMP_NUM_THREADS") < dockerfile.rindex("CMD")
+
+
+def test_render_policy_label_overrides_provenance_on_conflict() -> None:
+    profile = make_profile()
+    profile.required_labels["org.absconda.version"] = "policy-wins"
+    config = RenderConfig(
+        env=make_env(),
+        profile=profile,
+        multi_stage=True,
+        builder_base=DEFAULT_BUILDER_IMAGE,
+        runtime_base="debian:bookworm-slim",
+        template_path=None,
+        extra_labels={"org.absconda.version": "provenance-value"},
+    )
+    dockerfile = render_dockerfile(config)
+    assert 'LABEL org.absconda.version="policy-wins"' in dockerfile
+    assert "provenance-value" not in dockerfile
+
+
 def test_render_dockerfile_multi_stage() -> None:
     env = make_env()
     profile = make_profile()

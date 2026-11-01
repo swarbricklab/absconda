@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional, Tuple
@@ -44,6 +44,10 @@ class RenderConfig:
     template_path: Optional[Path] = None
     renv_lock: Optional[str] = None
     renv_target: str = DEFAULT_RENV_TARGET
+    # Runtime ENV lines baked into the image (policy runtime_env + --env, #68).
+    runtime_env: Dict[str, str] = field(default_factory=dict)
+    # Extra OCI/absconda provenance labels merged with profile.required_labels (#70).
+    extra_labels: Dict[str, str] = field(default_factory=dict)
 
 
 def render_dockerfile(config: RenderConfig) -> str:
@@ -283,12 +287,14 @@ def _build_context(
         "renv_lock": config.renv_lock,
         "renv_enabled": config.renv_lock is not None,
         "renv_target_path": config.renv_target,
-        "labels": _label_pairs(config.profile.required_labels),
+        # Provenance labels come first; policy's required_labels override on conflict.
+        "labels": _label_pairs({**config.extra_labels, **config.profile.required_labels}),
         "tarball_mode": config.tarball_filename is not None,
         "tarball_filename": config.tarball_filename or "",
         "requirements_mode": config.requirements_filename is not None,
         "requirements_filename": config.requirements_filename or "",
         "needs_git": _needs_git(config.env),
+        "runtime_env_block": _env_var_lines(config.runtime_env),
     }
 
 

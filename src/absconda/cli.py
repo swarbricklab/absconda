@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import json
 import os
 import re
 import subprocess
@@ -24,7 +25,7 @@ import click
 import typer
 from rich.console import Console
 
-from . import __version__, remote
+from . import __version__, provenance, remote
 from . import config as cfg
 from .environment import (
     EnvironmentLoadError,
@@ -263,6 +264,318 @@ def _check_build_disk_space(min_free_gb: float) -> None:
     )
 
 
+def _git_provenance(start: Path) -> Dict[str, str]:
+    """Return {revision, source} for the git repo containing ``start``, if any.
+
+    Best-effort: returns an empty dict when git is unavailable or ``start`` is
+    not inside a repository.
+    """
+    result: Dict[str, str] = {}
+    cwd = str(start if start.is_dir() else start.parent)
+    try:
+        rev = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if rev:
+            result["revision"] = rev
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return result
+
+    try:
+        url = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if url:
+            result["source"] = url
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+    return result
+
+
+def _env_file_text_for(report: LoadReport, env_file: Optional[Path]) -> Optional[str]:
+    """Return canonical text to hash for the env-source provenance label.
+
+    Prefer the bytes of the actual source file; fall back to the normalized env
+    YAML so a hash is recorded even when the source path isn't threaded through.
+    """
+    if env_file is not None:
+        try:
+            return env_file.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    if report.env is not None and report.env.raw:
+        import yaml
+
+        return yaml.safe_dump(report.env.raw, sort_keys=False)
+    return None
+
+
+def _provenance_labels(
+    report: LoadReport,
+    *,
+    env_name: str,
+    env_file: Optional[Path],
+    builder_base: Optional[str],
+    runtime_base: Optional[str],
+    base_image: Optional[str],
+) -> Dict[str, str]:
+    """Assemble OCI + absconda provenance labels for a build (issue #70)."""
+    snapshot_text: Optional[str] = None
+    if report.snapshot is not None:
+        import yaml
+
+        snapshot_text = yaml.safe_dump(report.snapshot.raw, sort_keys=False)
+
+    git = _git_provenance(env_file if env_file is not None else Path.cwd())
+
+    return provenance.build_provenance_labels(
+        env_name=env_name,
+        absconda_version=__version__,
+        env_file_name=env_file.name if env_file is not None else None,
+        env_file_text=_env_file_text_for(report, env_file),
+        snapshot_text=snapshot_text,
+        builder_base=builder_base,
+        runtime_base=runtime_base,
+        base_image=base_image,
+        created=provenance.build_timestamp(),
+        git_revision=git.get("revision"),
+        git_source=git.get("source"),
+    )
+
+
+def _resolve_pushed_digest(image_ref: str) -> Optional[str]:
+    """Resolve the ``repo@sha256:...`` digest of a just-pushed image.
+
+    Tries the local image's RepoDigests first (populated after a push), then a
+    registry query via buildx imagetools (works for remote builds where the
+    image isn't local). Returns None if neither is available.
+    """
+    try:
+        out = subprocess.run(
+            ["docker", "inspect", "--format", "{{json .RepoDigests}}", image_ref],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        repo_digests = json.loads(out) if out else []
+        if isinstance(repo_digests, list) and repo_digests:
+            selected = provenance.select_repo_digest(repo_digests, image_ref)
+            if selected:
+                return selected
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, json.JSONDecodeError):
+        pass
+
+    try:
+        out = subprocess.run(
+            [
+                "docker",
+                "buildx",
+                "imagetools",
+                "inspect",
+                image_ref,
+                "--format",
+                "{{.Manifest.Digest}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        digest = provenance.parse_push_digest(out) or (out if out.startswith("sha256:") else None)
+        if digest:
+            return provenance.digest_reference(image_ref, digest)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def _set_ghcr_visibility(image_ref: str, visibility: str) -> None:
+    """Best-effort: set a pushed GHCR container package's visibility (issue #71).
+
+    Uses ``gh api`` when available (handles auth), else the REST API with
+    ``GITHUB_TOKEN``. Never fails the publish — the push already succeeded — it
+    only warns on error so the visibility can be fixed manually.
+    """
+    parsed = provenance.ghcr_owner_and_package(image_ref)
+    if parsed is None:
+        err_console.print(
+            "[bold yellow]warning[/bold yellow]: --visibility only applies to ghcr.io "
+            f"images; skipping for '{image_ref}'."
+        )
+        return
+    owner, package = parsed
+    paths = provenance.visibility_api_paths(owner, package)
+
+    import shutil as _shutil
+
+    have_gh = _shutil.which("gh") is not None
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not have_gh and not token:
+        err_console.print(
+            "[bold yellow]warning[/bold yellow]: cannot set package visibility "
+            "(need the 'gh' CLI or GITHUB_TOKEN with packages admin scope); "
+            f"set '{package}' to {visibility} manually in GitHub package settings."
+        )
+        return
+
+    last_error = ""
+    for path in paths:
+        if have_gh:
+            cmd = [
+                "gh",
+                "api",
+                "--method",
+                "PATCH",
+                path,
+                "-f",
+                f"visibility={visibility}",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode == 0:
+                err_console.print(f"[green]visibility[/green]: set {package} to {visibility}.")
+                return
+            last_error = proc.stderr.strip() or proc.stdout.strip()
+        else:
+            try:
+                _patch_visibility_rest(path, visibility, token or "")
+                err_console.print(f"[green]visibility[/green]: set {package} to {visibility}.")
+                return
+            except Exception as exc:  # noqa: BLE001 - best-effort, report and continue
+                last_error = str(exc)
+
+    err_console.print(
+        f"[bold yellow]warning[/bold yellow]: could not set visibility for '{package}' "
+        f"({last_error or 'unknown error'}); set it manually in GitHub package settings."
+    )
+
+
+def _patch_visibility_rest(path: str, visibility: str, token: str) -> None:
+    from urllib.request import Request, urlopen
+
+    body = json.dumps({"visibility": visibility}).encode("utf-8")
+    request = Request(
+        f"https://api.github.com{path}",
+        data=body,
+        method="PATCH",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "absconda",
+        },
+    )
+    with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed api.github.com host
+        if response.status not in (200, 204):
+            raise RuntimeError(f"HTTP {response.status}")
+
+
+def _finalize_publish(
+    image_ref: str,
+    *,
+    report: Optional[LoadReport],
+    env_file: Optional[Path],
+    base_image: Optional[str],
+    lockfile: Optional[Path],
+    visibility: Optional[str],
+) -> None:
+    """Post-push side effects: emit digest, update lockfile, set visibility.
+
+    Shared by ``build --push`` and ``publish``. Each step is best-effort and
+    independent so one failing (e.g. digest lookup offline) doesn't abort the
+    others.
+    """
+    digest_ref = _resolve_pushed_digest(image_ref)
+    if digest_ref:
+        err_console.print(f"[green]Image digest:[/green] {digest_ref}")
+    else:
+        err_console.print(
+            "[bold yellow]warning[/bold yellow]: could not resolve the image digest "
+            "(need docker inspect/buildx access to the pushed image)."
+        )
+
+    if lockfile is not None:
+        _write_lockfile_entry(
+            lockfile,
+            report=report,
+            env_file=env_file,
+            image_ref=image_ref,
+            digest_ref=digest_ref,
+            base_image=base_image,
+        )
+
+    if visibility and provenance.is_ghcr(image_ref):
+        _set_ghcr_visibility(image_ref, visibility)
+    elif visibility:
+        err_console.print(
+            "[bold yellow]warning[/bold yellow]: --visibility is only applied for "
+            f"ghcr.io images; '{image_ref}' left unchanged."
+        )
+
+
+def _write_lockfile_entry(
+    lockfile: Path,
+    *,
+    report: Optional[LoadReport],
+    env_file: Optional[Path],
+    image_ref: str,
+    digest_ref: Optional[str],
+    base_image: Optional[str],
+) -> None:
+    """Write/update a per-environment entry in the container lockfile (issue #69)."""
+    import yaml
+
+    env_name = report.env_name if report is not None else _slugify(Path(image_ref).name)
+
+    env_sha = None
+    if report is not None:
+        env_text = _env_file_text_for(report, env_file)
+        env_sha = provenance.sha256_text(env_text) if env_text is not None else None
+
+    snapshot_sha = None
+    if report is not None and report.snapshot is not None:
+        snapshot_sha = provenance.sha256_text(yaml.safe_dump(report.snapshot.raw, sort_keys=False))
+
+    entry = {
+        "image": image_ref,
+        "digest": digest_ref,
+        "edf_sha256": env_sha,
+        "esf_sha256": snapshot_sha,
+        "absconda_version": __version__,
+        "base_image": base_image,
+        "built": provenance.build_timestamp(),
+    }
+
+    existing: Optional[Dict[str, Any]] = None
+    if lockfile.exists():
+        try:
+            loaded = yaml.safe_load(lockfile.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (OSError, yaml.YAMLError) as exc:
+            err_console.print(
+                f"[bold yellow]warning[/bold yellow]: could not read lockfile "
+                f"'{lockfile}' ({exc}); overwriting."
+            )
+
+    merged = provenance.merge_lockfile_entry(existing, env_name, entry)
+    try:
+        lockfile.parent.mkdir(parents=True, exist_ok=True)
+        lockfile.write_text(provenance.dumps_lockfile(merged), encoding="utf-8")
+        err_console.print(f"[green]Lockfile updated:[/green] {lockfile} ({env_name})")
+    except OSError as exc:
+        err_console.print(
+            f"[bold yellow]warning[/bold yellow]: could not write lockfile '{lockfile}' ({exc})."
+        )
+
+
 def _enforce_policy_constraints(report: LoadReport) -> None:
     profile = _active_policy().profile
     allowed = profile.allowed_channels
@@ -295,6 +608,33 @@ class RemoteBuildOptions:
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "env"
+
+
+def _parse_env_overrides(env: Optional[list[str]]) -> Dict[str, str]:
+    """Parse repeatable ``--env KEY=VALUE`` options, exiting on a malformed entry."""
+    if not env:
+        return {}
+    try:
+        return provenance.parse_env_assignments(env)
+    except ValueError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+def _resolve_visibility(visibility: Optional[str]) -> Optional[str]:
+    """Resolve the effective package visibility from the flag or config.
+
+    Returns None (no action) unless explicitly set. Validates the value.
+    """
+    value = visibility if visibility is not None else cfg.get_config_value("publish.visibility")
+    if value is None:
+        return None
+    if value not in ("public", "private"):
+        err_console.print(
+            f"[red]Error:[/red] --visibility must be 'public' or 'private', got '{value}'."
+        )
+        raise typer.Exit(code=1)
+    return value
 
 
 def _detect_env_name_from_dockerfile(dockerfile_text: str) -> Optional[str]:
@@ -510,6 +850,9 @@ def _build_image_local(
     base_override: Optional[str] = None,
     dockerfile_override: Optional[str] = None,
     build_args: Optional[list[str]] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+    env_file: Optional[Path] = None,
+    embed_dockerfile: bool = False,
 ) -> str:
     if dockerfile_override is not None:
         dockerfile = dockerfile_override
@@ -523,9 +866,15 @@ def _build_image_local(
             multi_stage_override=multi_stage_override,
             base_override=base_override,
             renv_lock=renv_lock,
+            env_overrides=env_overrides,
+            env_file=env_file,
         )
     else:
         raise RuntimeError("Either dockerfile_override or report must be provided")
+
+    if embed_dockerfile:
+        embed_line = provenance.dockerfile_embed_label(dockerfile)
+        dockerfile = dockerfile.rstrip("\n") + "\n" + embed_line + "\n"
 
     image_ref = _image_reference(repository, env_name, tag)
     context_path = context.resolve() if context is not None else None
@@ -596,6 +945,9 @@ def _build_image_remote(
     base_override: Optional[str] = None,
     dockerfile_override: Optional[str] = None,
     build_args: Optional[list[str]] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+    env_file: Optional[Path] = None,
+    embed_dockerfile: bool = False,
 ) -> str:
     if dockerfile_override is not None:
         dockerfile = dockerfile_override
@@ -609,9 +961,15 @@ def _build_image_remote(
             multi_stage_override=multi_stage_override,
             base_override=base_override,
             renv_lock=renv_lock,
+            env_overrides=env_overrides,
+            env_file=env_file,
         )
     else:
         raise RuntimeError("Either dockerfile_override or report must be provided")
+
+    if embed_dockerfile:
+        embed_line = provenance.dockerfile_embed_label(dockerfile)
+        dockerfile = dockerfile.rstrip("\n") + "\n" + embed_line + "\n"
 
     image_ref = _image_reference(repository, env_name, tag)
     policy_resolution = _active_policy()
@@ -695,6 +1053,8 @@ def _render_dockerfile(
     multi_stage_override: Optional[bool],
     base_override: Optional[str] = None,
     renv_lock: Optional[str] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+    env_file: Optional[Path] = None,
 ) -> str:
     policy_resolution = _active_policy()
     profile = policy_resolution.profile
@@ -742,18 +1102,37 @@ def _render_dockerfile(
     if report.env is not None:
         _print_warning_messages(gpu_warnings(report.env, base_image=base_override))
 
+    resolved_env_name = env_name_override if env_name_override is not None else report.env_name
+
+    # Runtime ENV: policy runtime_env is the base, CLI --env overrides per key (#68).
+    runtime_env = dict(profile.runtime_env)
+    if env_overrides:
+        runtime_env.update(env_overrides)
+
+    # Provenance labels baked into the image / generated Dockerfile (#70).
+    extra_labels = _provenance_labels(
+        report,
+        env_name=resolved_env_name,
+        env_file=env_file,
+        builder_base=builder_base if not report.requirements else None,
+        runtime_base=runtime_base if not report.requirements else None,
+        base_image=base_override,
+    )
+
     config = RenderConfig(
         env=report.env,
         base_image=base_override,
         tarball_filename="conda-env.tar.gz" if report.tarball else None,
         requirements_filename="requirements.txt" if report.requirements else None,
-        env_name=env_name_override if env_name_override is not None else report.env_name,
+        env_name=resolved_env_name,
         profile=profile,
         multi_stage=multi_stage,
         builder_base=builder_base,
         runtime_base=runtime_base,
         template_path=template,
         renv_lock=renv_lock,
+        runtime_env=runtime_env,
+        extra_labels=extra_labels,
     )
 
     try:
@@ -831,6 +1210,14 @@ def generate(
         "--renv-lock",
         help="Path to an renv.lock file to restore alongside the Conda environment.",
     ),
+    env: Optional[list[str]] = typer.Option(
+        None,
+        "--env",
+        help=(
+            "Runtime environment variable KEY=VALUE baked into the image as ENV. "
+            "Repeatable; overrides a policy 'runtime_env' entry with the same key."
+        ),
+    ),
 ) -> None:
     """Generate a Dockerfile from the provided environment file, tarball, or requirements."""
 
@@ -843,6 +1230,7 @@ def generate(
     report = _load_with_feedback(file, tarball, requirements, snapshot)
     _print_warnings(report)
     _enforce_policy_constraints(report)
+    env_overrides = _parse_env_overrides(env)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
     dockerfile = _render_dockerfile(
         report,
@@ -852,6 +1240,8 @@ def generate(
         multi_stage_override=multi_stage,
         base_override=base,
         renv_lock=renv_lock_text,
+        env_overrides=env_overrides,
+        env_file=file,
     )
 
     if output is not None:
@@ -1051,6 +1441,40 @@ def build(
             "free (local builds only). 0 disables the check (default)."
         ),
     ),
+    env: Optional[list[str]] = typer.Option(
+        None,
+        "--env",
+        help=(
+            "Runtime environment variable KEY=VALUE baked into the image as ENV. "
+            "Repeatable; overrides a policy 'runtime_env' entry with the same key. "
+            "Still overridable at container runtime (docker run -e KEY=VALUE)."
+        ),
+    ),
+    lockfile: Optional[Path] = typer.Option(
+        None,
+        "--lockfile",
+        help=(
+            "Write/update a machine-readable container lockfile with this "
+            "environment's image, digest, and source hashes (requires --push)."
+        ),
+    ),
+    embed_dockerfile: bool = typer.Option(
+        False,
+        "--embed-dockerfile",
+        help=(
+            "Embed the rendered Dockerfile in the image as a base64 OCI label "
+            "(org.absconda.dockerfile.base64) so the image is self-documenting."
+        ),
+    ),
+    visibility: Optional[str] = typer.Option(
+        None,
+        "--visibility",
+        help=(
+            "After pushing to ghcr.io, set the package visibility ('public' or "
+            "'private') via the GitHub API. Opt-in; needs the 'gh' CLI or "
+            "GITHUB_TOKEN with packages admin scope."
+        ),
+    ),
 ) -> None:
     """Render a Dockerfile and build the container image."""
 
@@ -1090,6 +1514,9 @@ def build(
             remote_builder, remote_config, remote_wait, remote_off
         )
 
+        # --dockerfile bypasses rendering, so --env has nothing to inject here.
+        resolved_visibility = _resolve_visibility(visibility)
+
         if remote_opts:
             image_ref = _build_image_remote(
                 report,
@@ -1106,6 +1533,7 @@ def build(
                 remote_options=remote_opts,
                 dockerfile_override=dockerfile_text,
                 build_args=build_arg,
+                embed_dockerfile=embed_dockerfile,
             )
         else:
             image_ref = _build_image_local(
@@ -1122,11 +1550,20 @@ def build(
                 renv_lock=None,
                 dockerfile_override=dockerfile_text,
                 build_args=build_arg,
+                embed_dockerfile=embed_dockerfile,
             )
 
         err_console.print(f"[green]Image built:[/green] {image_ref}")
         if push:
             err_console.print(f"[green]Image pushed:[/green] {image_ref}")
+            _finalize_publish(
+                image_ref,
+                report=report,
+                env_file=file,
+                base_image=None,
+                lockfile=lockfile,
+                visibility=resolved_visibility,
+            )
         return
 
     # Standard mode: generate Dockerfile from environment file
@@ -1139,6 +1576,8 @@ def build(
     _enforce_policy_constraints(report)
     if check_wheels:
         _run_wheel_check(report)
+    env_overrides = _parse_env_overrides(env)
+    resolved_visibility = _resolve_visibility(visibility)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
     resolved_env_name = env_name if env_name is not None else report.env_name
@@ -1166,6 +1605,9 @@ def build(
             remote_options=remote_opts,
             base_override=base,
             build_args=build_arg,
+            env_overrides=env_overrides,
+            env_file=file,
+            embed_dockerfile=embed_dockerfile,
         )
     else:
         image_ref = _build_image_local(
@@ -1182,11 +1624,22 @@ def build(
             renv_lock=renv_lock_text,
             base_override=base,
             build_args=build_arg,
+            env_overrides=env_overrides,
+            env_file=file,
+            embed_dockerfile=embed_dockerfile,
         )
 
     err_console.print(f"[green]Image built:[/green] {image_ref}")
     if push:
         err_console.print(f"[green]Image pushed:[/green] {image_ref}")
+        _finalize_publish(
+            image_ref,
+            report=report,
+            env_file=file,
+            base_image=base,
+            lockfile=lockfile,
+            visibility=resolved_visibility,
+        )
 
 
 @app.command()
@@ -1326,6 +1779,41 @@ def publish(
             "free (local builds only). 0 disables the check (default)."
         ),
     ),
+    env: Optional[list[str]] = typer.Option(
+        None,
+        "--env",
+        help=(
+            "Runtime environment variable KEY=VALUE baked into the image as ENV. "
+            "Repeatable; overrides a policy 'runtime_env' entry with the same key. "
+            "Still overridable at container runtime (docker run -e KEY=VALUE)."
+        ),
+    ),
+    lockfile: Optional[Path] = typer.Option(
+        None,
+        "--lockfile",
+        help=(
+            "Write/update a machine-readable container lockfile with this "
+            "environment's image, digest, and source hashes."
+        ),
+    ),
+    embed_dockerfile: bool = typer.Option(
+        False,
+        "--embed-dockerfile",
+        help=(
+            "Embed the rendered Dockerfile in the image as a base64 OCI label "
+            "(org.absconda.dockerfile.base64) so the image is self-documenting."
+        ),
+    ),
+    visibility: Optional[str] = typer.Option(
+        None,
+        "--visibility",
+        help=(
+            "After pushing to ghcr.io, set the package visibility ('public' or "
+            "'private') via the GitHub API. Opt-in; needs the 'gh' CLI or "
+            "GITHUB_TOKEN with packages admin scope. Defaults to config "
+            "'publish.visibility' when unset."
+        ),
+    ),
 ) -> None:
     """Build a container image and push it to a registry."""
 
@@ -1365,6 +1853,9 @@ def publish(
             remote_builder, remote_config, remote_wait, remote_off
         )
 
+        # --dockerfile bypasses rendering, so --env has nothing to inject here.
+        resolved_visibility = _resolve_visibility(visibility)
+
         if remote_opts:
             image_ref = _build_image_remote(
                 report,
@@ -1381,6 +1872,7 @@ def publish(
                 remote_options=remote_opts,
                 dockerfile_override=dockerfile_text,
                 build_args=build_arg,
+                embed_dockerfile=embed_dockerfile,
             )
         else:
             image_ref = _build_image_local(
@@ -1397,9 +1889,18 @@ def publish(
                 renv_lock=None,
                 dockerfile_override=dockerfile_text,
                 build_args=build_arg,
+                embed_dockerfile=embed_dockerfile,
             )
 
         err_console.print(f"[green]Image pushed:[/green] {image_ref}")
+        _finalize_publish(
+            image_ref,
+            report=report,
+            env_file=file,
+            base_image=None,
+            lockfile=lockfile,
+            visibility=resolved_visibility,
+        )
         return
 
     # Standard mode: generate Dockerfile from environment file
@@ -1412,6 +1913,8 @@ def publish(
     _enforce_policy_constraints(report)
     if check_wheels:
         _run_wheel_check(report)
+    env_overrides = _parse_env_overrides(env)
+    resolved_visibility = _resolve_visibility(visibility)
     renv_lock_text = _read_optional_text_file(renv_lock, "renv lock")
 
     resolved_env_name = env_name if env_name is not None else report.env_name
@@ -1439,6 +1942,9 @@ def publish(
             remote_options=remote_opts,
             base_override=base,
             build_args=build_arg,
+            env_overrides=env_overrides,
+            env_file=file,
+            embed_dockerfile=embed_dockerfile,
         )
     else:
         image_ref = _build_image_local(
@@ -1455,9 +1961,20 @@ def publish(
             renv_lock=renv_lock_text,
             base_override=base,
             build_args=build_arg,
+            env_overrides=env_overrides,
+            env_file=file,
+            embed_dockerfile=embed_dockerfile,
         )
 
     err_console.print(f"[green]Image pushed:[/green] {image_ref}")
+    _finalize_publish(
+        image_ref,
+        report=report,
+        env_file=file,
+        base_image=base,
+        lockfile=lockfile,
+        visibility=resolved_visibility,
+    )
 
 
 def _publish_and_get_ref(

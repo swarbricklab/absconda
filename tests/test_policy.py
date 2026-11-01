@@ -63,6 +63,56 @@ hooks:
     assert result.hooks.after_validate is None
 
 
+def test_builtin_reproducible_profile_without_policy_file(tmp_path, monkeypatch):
+    """`--profile reproducible` works with no policy file and sets thread vars (#68)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = load_policy(None, "reproducible")
+
+    assert result.source_path is None
+    assert result.profile.name == "reproducible"
+    assert result.profile.runtime_env["OMP_NUM_THREADS"] == "1"
+    assert result.profile.runtime_env["VECLIB_MAXIMUM_THREADS"] == "1"
+
+
+def test_builtin_default_profile_has_empty_runtime_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = load_policy(None, None)
+    assert result.profile.runtime_env == {}
+
+
+def test_unknown_builtin_profile_falls_back_to_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = load_policy(None, "does-not-exist")
+    assert result.profile.name == "default"
+    assert result.warnings  # warned about the fallback
+
+
+def test_policy_file_runtime_env_is_parsed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    policy_file = tmp_path / "absconda-policy.yaml"
+    policy_file.write_text(
+        """
+default_profile: custom
+profiles:
+  custom:
+    runtime_env:
+      FOO: bar
+        """.strip()
+    )
+
+    result = load_policy(None, None)
+    assert result.profile.runtime_env == {"FOO": "bar"}
+    # Built-in profiles remain available alongside file-defined ones.
+    assert load_policy(policy_file, "reproducible").profile.name == "reproducible"
+
+
 def test_load_policy_unknown_profile_raises(tmp_path):
     policy_file = tmp_path / "policy.yaml"
     policy_file.write_text(

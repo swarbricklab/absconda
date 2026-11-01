@@ -418,6 +418,65 @@ absconda build --file environment.yaml --min-free-gb 10
 On a warm builder that accumulates BuildKit cache, periodically run
 `docker builder prune` / `docker image prune` to reclaim space.
 
+## Runtime Environment Variables
+
+Bake environment variables into the image as `ENV` with repeatable `--env KEY=VALUE`
+on `generate`/`build`/`publish`. They remain overridable at container runtime
+(`docker run -e KEY=VALUE`):
+
+```bash
+absconda build --file environment.yaml --repository myimage \
+  --env OMP_NUM_THREADS=1 --env TZ=UTC
+```
+
+A policy profile can set defaults via a `runtime_env:` map; `--env` overrides a
+policy entry with the same key. The built-in **`reproducible`** profile sets the
+single-threaded BLAS/OMP vars (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+`MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` = 1) so
+bit-reproducible numerical results travel with the image:
+
+```bash
+absconda --profile reproducible build --file environment.yaml --repository myimage
+```
+
+## Provenance & Lockfiles
+
+Generated Dockerfiles carry OCI + absconda provenance **labels** by default
+(`org.opencontainers.image.*` plus `org.absconda.version`, `env-sha256`,
+`snapshot-sha256`, base images, and git `revision`/`source` when built inside a
+repo). `--embed-dockerfile` additionally stores the full rendered Dockerfile in a
+base64 label (`org.absconda.dockerfile.base64`) so the image is self-documenting.
+
+On a push, absconda prints the image **digest** (`repo@sha256:…`) — the real
+reproducibility anchor. `--lockfile PATH` writes/updates a machine-readable entry
+per environment (`image`, `digest`, `edf_sha256`, `esf_sha256`, `absconda_version`,
+`base_image`, `built`), handy for pinning containers by digest in a workflow:
+
+```bash
+absconda publish --file environment.yaml --repository ghcr.io/org/tool \
+  --lockfile containers.lock.yaml --embed-dockerfile
+```
+
+## GHCR Package Visibility
+
+GHCR packages default to **private** on first push. To set visibility after a
+`ghcr.io` push, opt in with `--visibility public` (or `private`), or set
+`publish.visibility` in config. This is **opt-in** — nothing is made public
+unless you ask. It uses the `gh` CLI if available, else `GITHUB_TOKEN` with a
+packages-admin scope, and is best-effort (a failure warns rather than failing the
+publish):
+
+```bash
+absconda publish --file environment.yaml --repository ghcr.io/org/tool \
+  --visibility public
+```
+
+```yaml
+# ~/.config/absconda/config.yaml
+publish:
+  visibility: public   # applied to ghcr.io pushes
+```
+
 ## Next Steps
 
 - [Remote Builders](remote-builders.md) - Build on GCP

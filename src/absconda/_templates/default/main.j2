@@ -21,4 +21,11 @@
 {% include "fragments/export_block.j2" %}
 {% endif %}
 
+{% if runtime_env_block %}
+# Runtime environment variables (policy runtime_env + --env). Overridable at
+# container runtime with `docker run -e KEY=VALUE`.
+{% for line in runtime_env_block %}
+{{ line }}
+{% endfor %}
+{% endif %}
 CMD {{ runtime_command }}

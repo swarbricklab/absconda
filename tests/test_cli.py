@@ -231,6 +231,65 @@ def test_min_free_gb_invalid_config_warns_and_ignores(monkeypatch) -> None:
     assert cli_mod._resolve_min_free_gb(None) == 0.0
 
 
+def test_pip_check_flag_and_resolution(monkeypatch) -> None:
+    """--pip-check / --no-pip-check collapse to an override; config is the fallback (#75)."""
+    import absconda.cli as cli_mod
+
+    # Flag collapse.
+    assert cli_mod._pip_check_flag(None, False) is None  # defer to config/default
+    assert cli_mod._pip_check_flag("warn", False) == "warn"
+    assert cli_mod._pip_check_flag(None, True) == "skip"  # --no-pip-check
+    assert cli_mod._pip_check_flag("skip", True) == "skip"  # consistent combo ok
+
+    # Resolution: override wins; else config; else default error.
+    monkeypatch.setattr(cli_mod.cfg, "get_config_value", lambda key: "warn")
+    assert cli_mod._resolve_pip_check(None) == "warn"  # from config
+    assert cli_mod._resolve_pip_check("skip") == "skip"  # flag override wins
+    monkeypatch.setattr(cli_mod.cfg, "get_config_value", lambda key: None)
+    assert cli_mod._resolve_pip_check(None) == "error"  # default
+
+
+def test_pip_check_conflict_errors(tmp_path: Path) -> None:
+    env_path = write_env(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["generate", "--file", str(env_path), "--no-pip-check", "--pip-check", "warn"],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code != 0
+    assert "conflicts" in result.output
+
+
+def test_pip_check_invalid_value_errors(tmp_path: Path) -> None:
+    env_path = write_env(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["generate", "--file", str(env_path), "--pip-check", "bogus"],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code != 0
+    assert "pip-check mode must be one of" in result.output
+
+
+def test_generate_pip_check_warn_renders_non_fatal(tmp_path: Path) -> None:
+    env_path = tmp_path / "env.yaml"
+    env_path.write_text(
+        "name: legacy\nchannels: [conda-forge]\ndependencies:\n  - python=3.11\n"
+        "  - pip\n  - pip:\n    - rich\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["generate", "--file", str(env_path), "--pip-check", "warn"],
+        env={"HOME": str(tmp_path)},
+    )
+    assert result.exit_code == 0, result.output
+    assert "pip check || echo" in result.output
+
+
 def test_build_rejects_malformed_env(tmp_path: Path) -> None:
     env_path = write_env(tmp_path)
     runner = CliRunner()

@@ -48,6 +48,9 @@ class RenderConfig:
     runtime_env: Dict[str, str] = field(default_factory=dict)
     # Extra OCI/absconda provenance labels merged with profile.required_labels (#70).
     extra_labels: Dict[str, str] = field(default_factory=dict)
+    # In-build `pip check` gate: "error" (fail build), "warn" (report, proceed),
+    # or "skip" (don't run it) — for packaging legacy envs faithfully (#75).
+    pip_check: str = "error"
 
 
 def render_dockerfile(config: RenderConfig) -> str:
@@ -295,6 +298,7 @@ def _build_context(
         "requirements_filename": config.requirements_filename or "",
         "needs_git": _needs_git(config.env),
         "runtime_env_block": _env_var_lines(config.runtime_env),
+        "pip_check": config.pip_check,
     }
 
 

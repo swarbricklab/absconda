@@ -675,6 +675,24 @@ nvidia-smi  # Shows CUDA version
 # CUDA 12.1 → pytorch-cuda=12.1
 ```
 
+### `No matching distribution found for torch==<ver>+cuXXX`
+
+A pinned CUDA wheel only ships for certain CPython versions, so a pinned-but-wrong
+interpreter (e.g. `python=3.13` + `torch==2.2.2+cu118`, which only ships through
+`cp312`) fails ~60s into the pip layer. Catch it *before* the build with the
+opt-in online wheel check:
+
+```bash
+absconda publish --check-wheels --file environment.yaml --repository ghcr.io/org/gpu
+# Errors fast if download.pytorch.org has no matching cpXY wheel, listing the
+# Python tags that *are* available. An unreachable index only warns and proceeds.
+```
+
+absconda also statically warns (no network, always on) when a floating `python`
+(`>=`/unpinned) co-occurs with a pinned CUDA wheel, or when a bare `torch` sits
+behind a CUDA index without a `+cuXXX` tag (which can silently install the CPU
+wheel). Pin `python=X.Y` to make the online check actionable.
+
 ## Next Steps
 
 - [Data Science Example](data-science.md) - CPU-based ML

@@ -82,8 +82,14 @@ def test_apply_container_replacements_inserts_block(workflow_dir: Path) -> None:
     snakefile_change = next(c for c in changes if c.file.name == "Snakefile")
     assert snakefile_change.changed
     assert wf.MARKER_COMMENT in snakefile_change.updated
-    assert 'container: "docker://ghcr.io/example/qc:20260528"' in snakefile_change.updated
-    assert 'container: "docker://ghcr.io/example/align:20260528"' in snakefile_change.updated
+    # container: is emitted in the snakefmt-clean two-line form (issue #66).
+    assert (
+        '    container:\n        "docker://ghcr.io/example/qc:20260528"' in snakefile_change.updated
+    )
+    assert (
+        '    container:\n        "docker://ghcr.io/example/align:20260528"'
+        in snakefile_change.updated
+    )
     # Original conda lines should be commented, not removed.
     assert '# conda: "envs/qc.yaml"' in snakefile_change.updated
     assert '# conda: "envs/align.yaml"' in snakefile_change.updated
@@ -105,8 +111,8 @@ def test_apply_is_idempotent(workflow_dir: Path) -> None:
     changes2 = wf.apply_container_replacements(workflow_dir, manifest)
     snakefile_change = next(c for c in changes2 if c.file.name == "Snakefile")
     assert snakefile_change.updated.count(wf.MARKER_COMMENT) == 3  # fastqc, multiqc, align
-    assert 'container: "docker://ghcr.io/example/qc:v2"' in snakefile_change.updated
-    assert 'container: "docker://ghcr.io/example/qc:v1"' not in snakefile_change.updated
+    assert '"docker://ghcr.io/example/qc:v2"' in snakefile_change.updated
+    assert '"docker://ghcr.io/example/qc:v1"' not in snakefile_change.updated
 
 
 def test_apply_errors_without_image_ref(workflow_dir: Path) -> None:
@@ -154,8 +160,9 @@ def test_multiline_conda_directive_is_rewritten(tmp_path: Path) -> None:
         '    output: "out.txt"\n'
         "    # absconda: replaced conda env with container\n"
         "    # conda:\n"
-        '        # "envs/tools.yaml"\n'
-        '    container: "docker://ghcr.io/example/tools:v1"\n'
+        '    #     "envs/tools.yaml"\n'
+        "    container:\n"
+        '        "docker://ghcr.io/example/tools:v1"\n'
         '    shell: "echo {input} > {output}"\n'
     )
     assert snake_change.updated == expected
@@ -184,6 +191,55 @@ def test_revert_restores_conda_directive(workflow_dir: Path) -> None:
 
     restored = (workflow_dir / "Snakefile").read_text(encoding="utf-8")
     assert restored == original_snakefile
+
+
+@pytest.mark.parametrize(
+    "conda_directive",
+    [
+        '    conda: "envs/tools.yaml"\n',  # single-line form
+        '    conda:\n        "envs/tools.yaml"\n',  # two-line form
+    ],
+)
+def test_update_output_is_snakefmt_clean(tmp_path: Path, conda_directive: str) -> None:
+    """The rewritten workflow must pass ``snakefmt --check`` (issue #66)."""
+    snakefmt = pytest.importorskip("snakefmt")  # noqa: F841
+    import subprocess
+    import sys
+
+    envs = tmp_path / "envs"
+    envs.mkdir()
+    (envs / "tools.yaml").write_text(
+        "name: tools\nchannels: [conda-forge]\ndependencies: [python=3.11]\n",
+        encoding="utf-8",
+    )
+    snake = tmp_path / "Snakefile"
+    # Start from snakefmt-clean source so any post-rewrite diff is ours.
+    snake.write_text(
+        "rule run_tool:\n"
+        "    input:\n"
+        '        "in.txt",\n'
+        "    output:\n"
+        '        "out.txt",\n'
+        f"{conda_directive}"
+        "    shell:\n"
+        '        "echo {input} > {output}"\n',
+        encoding="utf-8",
+    )
+    assert (
+        subprocess.run([sys.executable, "-m", "snakefmt", "--check", str(snake)]).returncode == 0
+    ), "fixture source is not snakefmt-clean"
+
+    manifest = wf.build_manifest(tmp_path)
+    manifest.envs[0].image_ref = "ghcr.io/example/tools:v1"
+    changes = wf.apply_container_replacements(tmp_path, manifest)
+    snake.write_text(changes[0].updated, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "snakefmt", "--check", str(snake)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"snakefmt would reformat update output:\n{result.stderr}"
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +324,7 @@ def test_cli_update_applies_and_reverts(workflow_dir: Path) -> None:
     assert result.exit_code == 0, result.output
     updated = (workflow_dir / "Snakefile").read_text(encoding="utf-8")
     assert wf.MARKER_COMMENT in updated
-    assert 'container: "docker://ghcr.io/example/qc:v1"' in updated
+    assert '    container:\n        "docker://ghcr.io/example/qc:v1"' in updated
 
     result = _invoke(["workflow", "update", str(workflow_dir), "--revert"], workflow_dir)
     assert result.exit_code == 0, result.output

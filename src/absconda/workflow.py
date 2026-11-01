@@ -46,10 +46,16 @@ _RULE_RE = re.compile(r"^(?P<indent>[ \t]*)rule\s+(?P<name>[A-Za-z_][A-Za-z0-9_]
 MARKER_COMMENT = "# absconda: replaced conda env with container"
 
 # Matches a previously-injected marker block so we can refresh tags or revert.
+# The ``container:`` directive is matched in both the two-line form we now emit
+# (snakefmt-clean) and the legacy single-line form, so re-running ``update`` on a
+# workflow written by an older absconda migrates it to the clean form.
 _MARKER_BLOCK_RE = re.compile(
     r"(?P<indent>^[ \t]*)# absconda: replaced conda env with container[ \t]*\r?\n"
     r"(?P<commented>(?:[ \t]*#[^\r\n]*\r?\n)+)"
-    r"(?P<container_line>[ \t]*container:[ \t]*['\"]docker://[^'\"]+['\"][ \t]*)$",
+    r"(?P<container>[ \t]*container:[ \t]*"
+    r"""(?:(?P<q1>['"])docker://[^'"]+(?P=q1)"""  # legacy: container: "docker://..."
+    r"""|\r?\n[ \t]+(?P<q2>['"])docker://[^'"]+(?P=q2))"""  # current: two-line form
+    r"[ \t]*)$",
     re.MULTILINE,
 )
 
@@ -366,11 +372,12 @@ def _rewrite_file(
             return match.group(0)
 
         original_span = match.group(0)
-        commented = _comment_block(original_span)
+        commented = _comment_block(original_span, indent)
         return (
             f"{indent}{MARKER_COMMENT}\n"
             f"{commented}\n"
-            f'{indent}container: "docker://{entry.image_ref}"'
+            f"{indent}container:\n"
+            f'{indent}    "docker://{entry.image_ref}"'
         )
 
     return _CONDA_RE.sub(replace_conda, text)
@@ -391,19 +398,30 @@ def _refresh_marker_blocks(text: str, file_dir: Path, lookup: dict[str, EnvEntry
         if entry is None or not entry.image_ref:
             return match.group(0)
         indent = match.group("indent")
-        # Strip trailing newline from commented_text — we'll add it back.
-        commented_block = commented_text.rstrip("\r\n")
+        # Re-comment from the recovered directive so a legacy (over-indented,
+        # single-line-container) block is normalised to the snakefmt-clean form.
+        commented_block = _comment_block(conda_match.group(0), indent)
         return (
             f"{indent}{MARKER_COMMENT}\n"
             f"{commented_block}\n"
-            f'{indent}container: "docker://{entry.image_ref}"'
+            f"{indent}container:\n"
+            f'{indent}    "docker://{entry.image_ref}"'
         )
 
     return _MARKER_BLOCK_RE.sub(refresh, text)
 
 
-def _comment_block(text: str) -> str:
-    """Prefix each line with ``# `` after its existing indent.
+def _comment_block(text: str, base_indent: str = "") -> str:
+    """Comment out a directive block, aligning each ``#`` to ``base_indent``.
+
+    Each non-blank line becomes ``{base_indent}# {rest}`` where ``rest`` is the
+    line with ``base_indent`` stripped — so the directive's own relative
+    indentation is preserved *inside* the comment body rather than before the
+    ``#``. This keeps the output snakefmt-clean: snakefmt aligns a standalone
+    comment's ``#`` to the enclosing block indent and leaves the comment body
+    untouched, so a value line commented at its original (deeper) indent would be
+    reformatted (see issue #66). It also round-trips byte-identically through
+    :func:`_uncomment_block`, since the stripped relative indent is restored.
 
     Preserves blank/whitespace-only lines as-is (so revert is byte-identical).
     """
@@ -412,8 +430,8 @@ def _comment_block(text: str) -> str:
         if not line.strip():
             out.append(line)
             continue
-        indent_len = len(line) - len(line.lstrip())
-        out.append(line[:indent_len] + "# " + line[indent_len:])
+        rest = line[len(base_indent) :] if line.startswith(base_indent) else line.lstrip()
+        out.append(f"{base_indent}# {rest}")
     return "\n".join(out)
 
 

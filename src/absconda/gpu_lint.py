@@ -22,7 +22,10 @@ a build — they point at the fix.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from .environment import EnvSpec
 
@@ -37,8 +40,16 @@ _CUDA_INDEX_RE = re.compile(r"download\.pytorch\.org/whl/(cu\d+)", re.IGNORECASE
 _CUDA_LOCAL_RE = re.compile(r"\+cu\d+", re.IGNORECASE)
 # An exact python pin: python=3.10 / python==3.10 / python 3.10 (no range ops).
 _PYTHON_EXACT_RE = re.compile(r"^python\s*(?:==?|\s)\s*\d+\.\d+", re.IGNORECASE)
+# Captures the X.Y of an exact python pin for the cpXY wheel tag.
+_PYTHON_VERSION_RE = re.compile(r"^python\s*(?:==?|\s)\s*(\d+)\.(\d+)", re.IGNORECASE)
+# An exact pip version pin: torch==2.2.2+cu118 -> "2.2.2" (public version, sans local).
+_EXACT_PIN_RE = re.compile(r"==\s*([0-9][^,;\s]*)")
 
 _VERSION_SPLIT_RE = re.compile(r"[=<>!~\[\s@]")
+
+# Packages served by the download.pytorch.org wheel index (queried by the online
+# wheel-triple check). The index path is /whl/<cuda>/<package>/.
+_PYTORCH_INDEX_PKGS = ("torch", "torchvision", "torchaudio")
 
 
 def _split_deps(env: EnvSpec) -> tuple[list[str], list[str]]:
@@ -159,3 +170,165 @@ def gpu_warnings(env: EnvSpec, *, base_image: Optional[str] = None) -> List[str]
         )
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Online (python, torch, cuda) wheel-triple validation (issues #56 / #59)
+# ---------------------------------------------------------------------------
+#
+# The static checks above cannot catch a *pinned-but-wrong* interpreter, e.g.
+# ``python=3.13`` + ``torch==2.2.2+cu118`` which only ships through cp312. That
+# only surfaces ~60s into the pip layer with "No matching distribution found".
+# This check queries the wheel index before the build and fails fast.
+
+# The build-tag for each wheel on the index, e.g. ...-cp312-cp312-linux...
+_WHEEL_PYTAG_RE = re.compile(r"-cp(\d+)-", re.IGNORECASE)
+
+
+@dataclass
+class WheelCheck:
+    """Result of validating one pinned CUDA wheel against the online index."""
+
+    package: str
+    version: str
+    cuda: str
+    python_tag: str  # the required cpXY, or "" when python is not exactly pinned
+    status: str  # "ok" | "missing" | "skipped" | "not_applicable"
+    detail: str
+    available_tags: List[str] = field(default_factory=list)
+
+
+def _python_cp_tag(conda_deps: List[str]) -> Optional[str]:
+    """Return the cpXY wheel tag for an exactly-pinned python, else None."""
+    spec = _python_spec(conda_deps)
+    if spec is None:
+        return None
+    match = _PYTHON_VERSION_RE.match(spec)
+    if not match:
+        return None
+    return f"cp{match.group(1)}{match.group(2)}"
+
+
+def _pinned_public_version(dep: str) -> Optional[str]:
+    """Return the exact-pinned public version (sans +local) from a pip spec."""
+    match = _EXACT_PIN_RE.search(dep)
+    if not match:
+        return None
+    return match.group(1).split("+", 1)[0]
+
+
+def _default_fetch(url: str, timeout: float) -> str:
+    request = Request(url, headers={"User-Agent": "absconda-wheel-check"})
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https host
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
+
+
+def _available_python_tags(html: str, package: str, version: str, cuda: str) -> List[str]:
+    """Parse the cpXY tags published for ``package``-``version``+``cuda``.
+
+    The index encodes the ``+`` of the local version as ``%2B``; accept either.
+    """
+    tags: set[str] = set()
+    for sep in ("%2B", "+"):
+        needle = f"{package}-{version}{sep}{cuda}-"
+        for match in re.finditer(re.escape(needle) + r"cp(\d+)-", html, re.IGNORECASE):
+            tags.add(f"cp{match.group(1)}")
+    return sorted(tags, key=lambda t: (len(t), t))
+
+
+def check_wheel_triples(
+    env: EnvSpec,
+    *,
+    timeout: float = 10.0,
+    fetch: Optional[Callable[[str, float], str]] = None,
+) -> List[WheelCheck]:
+    """Validate each pinned CUDA wheel's (python, version, cuda) triple online.
+
+    For every pip dep that pins a ``download.pytorch.org`` package to an exact
+    ``<version>+cuXXX``, confirm the index actually publishes a wheel for the
+    exactly-pinned interpreter's ``cpXY`` tag. Returns one :class:`WheelCheck`
+    per such dep. Network failures degrade to ``status="skipped"`` so an offline
+    or unreachable index never blocks the build. When python is not exactly
+    pinned the triple is unknowable here (``status="not_applicable"``); the
+    static floating-python warning already covers that case.
+    """
+    fetch = fetch or _default_fetch
+    conda_deps, pip_deps = _split_deps(env)
+    python_tag = _python_cp_tag(conda_deps)
+
+    results: List[WheelCheck] = []
+    for dep in pip_deps:
+        name = _pkg_name(dep)
+        if name not in _PYTORCH_INDEX_PKGS:
+            continue
+        local = _CUDA_LOCAL_RE.search(dep)
+        version = _pinned_public_version(dep)
+        if not local or version is None:
+            continue  # not an exact +cuXXX pin — nothing to validate online
+        cuda = local.group(0).lstrip("+").lower()
+
+        if python_tag is None:
+            results.append(
+                WheelCheck(
+                    package=name,
+                    version=version,
+                    cuda=cuda,
+                    python_tag="",
+                    status="not_applicable",
+                    detail=(
+                        f"'{name}=={version}+{cuda}' pins a CUDA wheel but python is "
+                        "not exactly pinned, so the required cpXY tag is unknown. "
+                        "Pin 'python=X.Y' to enable the online wheel check."
+                    ),
+                )
+            )
+            continue
+
+        url = f"https://download.pytorch.org/whl/{cuda}/{name}/"
+        try:
+            html = fetch(url, timeout)
+        except (URLError, OSError, ValueError) as exc:
+            results.append(
+                WheelCheck(
+                    package=name,
+                    version=version,
+                    cuda=cuda,
+                    python_tag=python_tag,
+                    status="skipped",
+                    detail=f"could not reach {url} ({exc}); skipping wheel check.",
+                )
+            )
+            continue
+
+        available = _available_python_tags(html, name, version, cuda)
+        if python_tag in available:
+            results.append(
+                WheelCheck(
+                    package=name,
+                    version=version,
+                    cuda=cuda,
+                    python_tag=python_tag,
+                    status="ok",
+                    detail=f"{name}=={version}+{cuda} has a {python_tag} wheel.",
+                    available_tags=available,
+                )
+            )
+        else:
+            avail = ", ".join(available) if available else "(no wheels for this version)"
+            results.append(
+                WheelCheck(
+                    package=name,
+                    version=version,
+                    cuda=cuda,
+                    python_tag=python_tag,
+                    status="missing",
+                    detail=(
+                        f"no {python_tag} wheel for {name}=={version}+{cuda} on the "
+                        f"CUDA index. Available Python tags: {avail}. Pin 'python' to "
+                        "a version with a matching wheel, or change the wheel version."
+                    ),
+                    available_tags=available,
+                )
+            )
+    return results

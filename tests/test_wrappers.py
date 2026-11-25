@@ -429,3 +429,112 @@ def test_wrapper_with_pbs_and_singularity_shims():
         # Shim scripts exist
         assert (Path(tmpdir) / "singularity-shims" / "singularity").exists()
         assert (Path(tmpdir) / "singularity-shims" / "mksquashfs").exists()
+
+
+def _run_singularity_wrapper(tmp_path, shims, env_overrides):
+    """Render a singularity wrapper and run it against stub module/singularity.
+
+    The stub ``singularity`` prints its arguments and the SINGULARITYENV_*
+    variables it was given, so a test can see what the wrapper passes in.
+    """
+    import subprocess
+
+    out_dir = tmp_path / "wrappers"
+    paths = generate_wrappers(
+        WrapperConfig(
+            image_ref="test:latest",
+            commands=["tool"],
+            runtime="singularity",
+            output_dir=out_dir,
+            image_cache=tmp_path / "sif",
+            shims=shims,
+        )
+    )
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    (stub_bin / "module").write_text("#!/bin/sh\nexit 0\n")
+    (stub_bin / "singularity").write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do echo "ARG $a"; done\n'
+        'env | grep "^SINGULARITYENV_" | sed "s/^/ENV /"\n'
+    )
+    for f in stub_bin.iterdir():
+        f.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SINGULARITY", "APPTAINER"))}
+    env["PATH"] = f"{stub_bin}:{env['PATH']}"
+    env.update(env_overrides)
+    # `module` is a shell function on HPC systems; the stub on PATH stands in.
+    result = subprocess.run(
+        ["bash", str(paths["tool"])], env=env, capture_output=True, text=True, check=True
+    )
+    return result.stdout.splitlines()
+
+
+def _bind_targets(lines):
+    args = [line[4:] for line in lines if line.startswith("ARG ")]
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-B"]
+
+
+def test_singularity_shims_forward_host_cache_dirs(tmp_path):
+    """With singularity shims, the host cache/tmp dirs reach the nested singularity."""
+    cache = tmp_path / "cache"
+    tmpd = tmp_path / "tmp"
+    lines = _run_singularity_wrapper(
+        tmp_path,
+        ["singularity"],
+        {
+            "SINGULARITY_CACHEDIR": str(cache),
+            "APPTAINER_CACHEDIR": str(cache),
+            "SINGULARITY_TMPDIR": str(tmpd),
+        },
+    )
+    assert f"ENV SINGULARITYENV_SINGULARITY_CACHEDIR={cache}" in lines
+    assert f"ENV SINGULARITYENV_APPTAINER_CACHEDIR={cache}" in lines
+    assert f"ENV SINGULARITYENV_SINGULARITY_TMPDIR={tmpd}" in lines
+    binds = _bind_targets(lines)
+    # Bound once each, even when two variables name the same dir; created if missing.
+    assert binds.count(str(cache)) == 1
+    assert binds.count(str(tmpd)) == 1
+    assert cache.is_dir() and tmpd.is_dir()
+
+
+def test_singularity_shims_keep_explicit_singularityenv(tmp_path):
+    """An explicit SINGULARITYENV_* value wins over the host variable."""
+    host = tmp_path / "host-cache"
+    explicit = tmp_path / "explicit-cache"
+    lines = _run_singularity_wrapper(
+        tmp_path,
+        ["singularity"],
+        {
+            "SINGULARITY_CACHEDIR": str(host),
+            "SINGULARITYENV_SINGULARITY_CACHEDIR": str(explicit),
+        },
+    )
+    assert f"ENV SINGULARITYENV_SINGULARITY_CACHEDIR={explicit}" in lines
+    assert str(explicit) in _bind_targets(lines)
+    assert str(host) not in _bind_targets(lines)
+
+
+def test_no_singularity_shims_no_cache_forwarding(tmp_path):
+    """Without singularity shims the wrapper adds nothing for cache dirs."""
+    cache = tmp_path / "cache"
+    lines = _run_singularity_wrapper(tmp_path, [], {"SINGULARITY_CACHEDIR": str(cache)})
+    assert not any("SINGULARITYENV_SINGULARITY_CACHEDIR" in line for line in lines)
+    assert str(cache) not in _bind_targets(lines)
+    assert not cache.exists()
+
+
+def test_singularity_shims_skip_unusable_cache_dirs(tmp_path, monkeypatch):
+    """Relative paths and values that would break a -B spec are not forwarded."""
+    monkeypatch.chdir(tmp_path)
+    lines = _run_singularity_wrapper(
+        tmp_path,
+        ["singularity"],
+        {
+            "SINGULARITY_CACHEDIR": "relative-cache",
+            "SINGULARITY_TMPDIR": f"{tmp_path}/a:b",
+        },
+    )
+    assert not any(line.startswith("ENV SINGULARITYENV_SINGULARITY_") for line in lines)
+    assert not (tmp_path / "relative-cache").exists()
+    assert not any(":b" in t for t in _bind_targets(lines))

@@ -49,6 +49,28 @@ if [[ -f "$_CA_BUNDLE" ]]; then
     export SINGULARITYENV_SSL_CERT_FILE="$_CA_BUNDLE"
 fi
 
+{% if singularity_shims %}
+# Singularity does not pass host SINGULARITY_* / APPTAINER_* variables into
+# the container, so a singularity run inside it (through the shims) would not
+# see the host's cache and temp dirs and would fall back to $HOME. Forward the
+# ones that are set as SINGULARITYENV_* and bind them so they are writable.
+# Only absolute paths usable in a -B spec (no ':' or ',') that exist or can be
+# created are forwarded; anything else is left alone, as before.
+_BOUND=()
+for _var in SINGULARITY_CACHEDIR SINGULARITY_TMPDIR APPTAINER_CACHEDIR APPTAINER_TMPDIR; do
+    _envvar="SINGULARITYENV_${_var}"
+    _val="${!_envvar:-${!_var:-}}"
+    [[ "$_val" == /* && "$_val" != *[:,]* ]] || continue
+    mkdir -p -- "$_val" 2>/dev/null || true
+    [[ -d "$_val" ]] || continue
+    export "${_envvar}=${_val}"
+    if [[ " ${_BOUND[*]:-} " != *" $_val "* ]]; then
+        MOUNTS+=("-B" "$_val")
+        _BOUND+=("$_val")
+    fi
+done
+
+{% endif %}
 {% if gpu %}
 # GPU support
 GPU_FLAG="--nv"
@@ -84,6 +106,6 @@ export SINGULARITYENV_PATH="{{ path_parts | join(':') }}"
 exec singularity exec \
     $NO_HOME \
     $GPU_FLAG \
-    "${MOUNTS[@]}" \
+    ${MOUNTS[@]+"${MOUNTS[@]}"} \
     "$SIF_FILE" \
     {{ command }} "$@"

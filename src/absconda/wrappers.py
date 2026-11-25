@@ -219,6 +219,7 @@ def generate_wrappers(config: WrapperConfig) -> dict[str, Path]:
             "shim_path_dirs": shim_path_dirs,
             "use_pbs_env": use_pbs_env,
             "pbs_container_env": PBS_CONTAINER_ENV,
+            "singularity_shims": "singularity" in (config.shims or []),
         }
 
         wrapper_content = template.render(**context)

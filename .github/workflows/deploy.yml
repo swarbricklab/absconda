@@ -1,16 +1,15 @@
 name: Deploy to NCI
 
 on:
-  pull_request:
-    types: [closed]
+  # A push to main (i.e. a merged PR) rather than the PR's own `closed` event,
+  # so the run's ref is refs/heads/main: the self-hosted runner group only
+  # accepts this workflow from main.
+  push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
   publish:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.merged == true
     runs-on: [self-hosted, qxub-runner]
     permissions:
       contents: read
@@ -55,10 +54,10 @@ jobs:
       # reuses a stale `pip install` layer and the image never picks up new
       # commits. Pin to the exact merged commit so the env content changes each
       # release: the cache key changes (forcing a fresh install) and the build
-      # is reproducible. Falls back to github.sha for manual workflow_dispatch.
+      # is reproducible.
       - name: Pin absconda source to the merged commit
         run: |
-          REF="${{ github.event.pull_request.merge_commit_sha || github.sha }}"
+          REF="${{ github.sha }}"
           echo "Pinning absconda source to $REF"
           sed -i "s|absconda\.git@main|absconda.git@${REF}|" examples/absconda-env.yaml
           grep 'absconda\.git@' examples/absconda-env.yaml
